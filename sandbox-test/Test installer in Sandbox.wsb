@@ -1,0 +1,17 @@
+<Configuration>
+  <MappedFolders>
+    <MappedFolder>
+      <HostFolder>D:\claude\Easy-Theme-Creator-v2\dist</HostFolder>
+      <SandboxFolder>C:\sbxdist</SandboxFolder>
+      <ReadOnly>true</ReadOnly>
+    </MappedFolder>
+    <MappedFolder>
+      <HostFolder>D:\claude\Easy-Theme-Creator-v2\sandbox-test</HostFolder>
+      <SandboxFolder>C:\sbx</SandboxFolder>
+      <ReadOnly>false</ReadOnly>
+    </MappedFolder>
+  </MappedFolders>
+  <LogonCommand>
+    <Command>powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\sbx\run-test.ps1</Command>
+  </LogonCommand>
+</Configuration>

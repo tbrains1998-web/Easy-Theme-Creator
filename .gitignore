@@ -1,0 +1,29 @@
+# build output and staging
+dist/
+installer/stage/
+__pycache__/
+*.pyc
+
+# helper installers: build.py downloads them from their official releases
+third-party/
+
+# test runs and their screenshots
+sandbox-test/results/
+sandbox-test/shoot/
+
+# working notes and scratch pictures from development
+HANDOFF.md
+*_check.png
+*_preview.png
+layout_*.png
+mockups_test.png
+premium_atlas*.png
+premium_buttons.png
+taskbar_profile.png
+orb_blue.png
+orb_red.png
+app_screenshot.png
+test_sib_before.reg
+check_taskbar_orb.png
+test-shots/
+Build EXE.bat

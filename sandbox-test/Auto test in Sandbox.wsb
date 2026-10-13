@@ -1,0 +1,22 @@
+<Configuration>
+  <MappedFolders>
+    <MappedFolder>
+      <HostFolder>D:\claude\Easy-Theme-Creator-v2\dist</HostFolder>
+      <SandboxFolder>C:\sbxdist</SandboxFolder>
+      <ReadOnly>true</ReadOnly>
+    </MappedFolder>
+    <MappedFolder>
+      <HostFolder>D:\claude\Easy-Theme-Creator-v2\sandbox-test</HostFolder>
+      <SandboxFolder>C:\sbx</SandboxFolder>
+      <ReadOnly>false</ReadOnly>
+    </MappedFolder>
+    <MappedFolder>
+      <HostFolder>D:\claude\easy-theme-creator</HostFolder>
+      <SandboxFolder>C:\sbxv1</SandboxFolder>
+      <ReadOnly>true</ReadOnly>
+    </MappedFolder>
+  </MappedFolders>
+  <LogonCommand>
+    <Command>powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\sbx\auto-test.ps1</Command>
+  </LogonCommand>
+</Configuration>
