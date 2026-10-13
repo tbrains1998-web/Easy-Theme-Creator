@@ -47,6 +47,13 @@ Windows may say *"Windows protected your PC"* because the setup isn't signed. Cl
 
 ![The Windows 7 Start menu in the armor skin](screenshots/start-menu.jpg)
 
+## More pictures
+
+| | |
+|---|---|
+| ![Setup: what it installs](screenshots/installer-welcome.jpg) | ![Setup: the helpers, each with its own tick box](screenshots/installer-tasks.jpg) |
+| ![The app before a picture is picked](screenshots/app-start.jpg) | ![The app with a picture picked](screenshots/app.jpg) |
+
 ## Undo and uninstall
 
 **Undo** puts back exactly how Windows looked before your first Apply, every part of it, however many themes you tried in between.
