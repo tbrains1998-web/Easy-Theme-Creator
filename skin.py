@@ -296,11 +296,52 @@ def _mode(cls, dark=True):
 
 # ------------------------------------------------------------------ build
 
-def build(name, accent_hex, progress=None, art="color", dark=True, armor=False):
+# Classic apps (and everything else that is not an Explorer window) draw their edit
+# boxes, buttons, lists and tabs with the skin's plain classes, which Windows made light.
+# The same skin file carries Windows' own dark versions of them; with "Dark classic
+# apps" the plain classes take over the dark designs, so those apps get dark fields
+# and dark buttons to go with the light text the dark colour palette gives them.
+DARK_CLASSIC = {"edit", "button", "combobox", "listbox", "listview", "treeview", "tab",
+                "static", "tooltip", "spin", "progress"}
+DARK_SOURCE = "darkmode_darktheme::"
+
+
+def _copy_dark_classes(table, names):
+    """Copy every property of DarkMode_DarkTheme::X onto X (same part, state and
+    property, same record shape); records without a dark counterpart stay as they are."""
+    index = {n.lower(): i for i, n in enumerate(names)}
+    dark = {}                                         # (class, part, state, prop) -> (off, kind, inline, size)
+    plain = []
+    off = 0
+    while off + 32 <= len(table):
+        prop, kind, cls, part, state, inline, _, size = struct.unpack_from("<8i", table, off)
+        cname = names[cls].lower() if 0 <= cls < len(names) else ""
+        if cname.startswith(DARK_SOURCE) and cname[len(DARK_SOURCE):] in DARK_CLASSIC:
+            dark[(cname[len(DARK_SOURCE):], part, state, prop)] = (off, kind, inline, size)
+        elif cname in DARK_CLASSIC:
+            plain.append((cname, part, state, prop, off, kind, inline, size))
+        off = (off + 32 + (0 if inline else size) + 7) & ~7
+    copied = 0
+    for cname, part, state, prop, off, kind, inline, size in plain:
+        src = dark.get((cname, part, state, prop))
+        if not src or src[1] != kind or bool(src[2]) != bool(inline):
+            continue
+        if inline:
+            struct.pack_into("<i", table, off + 20, src[2])
+        elif src[3] == size:
+            table[off + 32:off + 32 + size] = table[src[0] + 32:src[0] + 32 + size]
+        else:
+            continue
+        copied += 1
+    return copied
+
+
+def build(name, accent_hex, progress=None, art="color", dark=True, armor=False, classic_dark=False):
     """Make a skin folder and return the path of its .msstyles.
     art: "color" repaints Windows' own art; "premium" also swaps in our own
     drawn armor-plate caption buttons (see premium.py).
-    armor: riveted Explorer bars, red buttons and the emblem panel (see armor.py)."""
+    armor: riveted Explorer bars, red buttons and the emblem panel (see armor.py).
+    classic_dark: classic apps' controls in Windows' own dark designs (see DARK_CLASSIC)."""
     import pefile
     # Windows only finds a skin whose folder has the same name as the file
     # (Themes\aero\aero.msstyles), so each build gets its own outer folder.
@@ -343,6 +384,8 @@ def build(name, accent_hex, progress=None, art="color", dark=True, armor=False):
     images = [(e.id, leaf.id, d) for e, leaf, d in entries("IMAGE")]
     streams = {e.id: (leaf.id, d) for e, leaf, d in entries("STREAM")}
     pe.close()
+    if classic_dark and dark:
+        _copy_dark_classes(table, names)
 
     # Property records: 8 ints (name, type, class, part, state, inline value, 0, size) + data.
     painter = Painter(accent_hex, strength=1.0)

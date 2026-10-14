@@ -86,10 +86,13 @@ class _SEI(ctypes.Structure):
                 ("dwHotKey", ctypes.c_ulong), ("hIcon", ctypes.c_void_p), ("hProcess", ctypes.c_void_p)]
 
 
+OUR_MODS = (TASKBAR_MOD, EXPLORER_MOD, "easy-theme-creator-standard-colors")
+
+
 def setup_access(hwnd=None):
-    """Once, with an admin prompt: let users write these two mods' settings (only
-    their "Settings" keys: set and read values). `hwnd` keeps the prompt in front."""
-    mods = [m for m in (TASKBAR_MOD, EXPLORER_MOD) if mod_installed(m) and not writable(m)]
+    """Once, with an admin prompt: let users write our mods' settings (only their
+    "Settings" keys: set and read values). `hwnd` keeps the prompt in front."""
+    mods = [m for m in OUR_MODS if mod_installed(m) and not writable(m)]
     if not mods:
         return
     script = os.path.join(os.environ.get("TEMP", FOLDER), "etc-windhawk-access.ps1")

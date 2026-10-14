@@ -208,6 +208,26 @@ def body():
         check("window skin active", "EasyThemeCreator" in (reg(HKCU, r"Software\Microsoft\Windows\CurrentVersion\ThemeManager", "DllName") or ""))
         check("Windows' current theme is ours", "My Theme" in (after["theme"] or "") or "EasyTheme" in (after["theme"] or ""), after["theme"])
 
+    # ---------------------------------------------------------- fix an app (standard colours mod)
+    import standard_colors
+    check("standard-colours mod installed", standard_colors.available())
+    probe = ("import tkinter as tk; r = tk.Tk(); r.withdraw(); "
+             "print(' '.join('#%02x%02x%02x' % tuple(v // 257 for v in r.winfo_rgb(n)) for n in ('SystemWindow', 'SystemWindowText')))")
+    py = os.path.join(os.path.dirname(APP), "python", "python.exe")
+
+    def probe_colors():                              # what a freshly started program sees
+        return subprocess.run([py, "-c", probe], capture_output=True, text=True, timeout=60).stdout.strip()
+    themed = probe_colors()
+    say("new program sees (themed):", themed)
+    check("dark palette reaches new programs", themed.startswith("#121214"), themed)
+    standard_colors.add("python.exe")
+    check("app added to the fixed list", "python.exe" in standard_colors.apps(), standard_colors.apps())
+    fixed = probe_colors()
+    say("new program sees (on the list):", fixed)
+    check("listed program gets Windows' standard colours", fixed == "#ffffff #000000", fixed)
+    standard_colors.remove("python.exe")
+    check("app removed from the fixed list", "python.exe" not in standard_colors.apps())
+
     # ---------------------------------------------------------- screenshots
     on_main(root.withdraw)                           # the test window must not cover the screen
     shot("1-desktop", wait=6)

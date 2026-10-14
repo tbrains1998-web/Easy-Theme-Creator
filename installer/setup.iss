@@ -116,7 +116,8 @@ begin
   Result := WindhawkInstalled and
     RegKeyExists(HKLM64, 'SOFTWARE\Windhawk\Engine\Mods\icon-resource-redirect') and
     RegKeyExists(HKLM64, 'SOFTWARE\Windhawk\Engine\Mods\windows-11-taskbar-styler') and
-    RegKeyExists(HKLM64, 'SOFTWARE\Windhawk\Engine\Mods\windows-11-file-explorer-styler');
+    RegKeyExists(HKLM64, 'SOFTWARE\Windhawk\Engine\Mods\windows-11-file-explorer-styler') and
+    RegKeyExists(HKLM64, 'SOFTWARE\Windhawk\Engine\Mods\easy-theme-creator-standard-colors');
 end;
 
 const

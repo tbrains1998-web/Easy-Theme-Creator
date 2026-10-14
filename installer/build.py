@@ -24,7 +24,7 @@ STAGE = os.path.join(HERE, "stage")
 OUT = os.path.join(ROOT, "dist")
 VERSION = "2.0"
 
-APP_FILES = ["xaml_styles.py", "openshell.py", "openshell_skin.py", "alien_icons.py", "armor.py", "assets.py", "cpl_panes.py", "easy_theme_creator.py",
+APP_FILES = ["xaml_styles.py", "standard_colors.py", "openshell.py", "openshell_skin.py", "alien_icons.py", "armor.py", "assets.py", "cpl_panes.py", "easy_theme_creator.py",
              "folders.py", "launch.pyw", "layout.py", "premium.py", "preview.py", "scifont.py",
              "shell_icons.py", "skin.py", "taskbar.py", "theme_core.py", "undo.py",
              "windows_apply.py", "app.ico"]
@@ -161,7 +161,38 @@ def stage_deps():
                  ("libc++.whl", "libunwind.whl", "windhawk-mod-shim.dll")]
         for f in files:
             copy(os.path.join(src, f), os.path.join(mod, arch, f))
+    build_our_mod(mod)
     copy(os.path.join(HERE, "setup-windhawk-mod.ps1"), os.path.join(deps, "setup-windhawk-mod.ps1"))
+
+
+OUR_MOD = "easy-theme-creator-standard-colors"
+OUR_MOD_VERSION = "1.0"
+WH_ROOT = os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "Windhawk")
+
+
+def build_our_mod(mod_dir):
+    """Compile our own Windhawk mod (standard colours for chosen apps) for 64- and
+    32-bit programs with Windhawk's bundled clang, the way Windhawk itself does."""
+    src = os.path.join(HERE, "windhawk-mod", OUR_MOD + ".wh.cpp")
+    clang = os.path.join(WH_ROOT, "Compiler", "bin", "clang++.exe")
+    engine = glob.glob(os.path.join(WH_ROOT, "Engine", "*", "64", "windhawk.dll"))
+    if not os.path.exists(clang) or not engine:
+        raise SystemExit("Windhawk (with its compiler) must be installed to build the mod.")
+    engine_dir = os.path.dirname(os.path.dirname(engine[-1]))
+    copy(src, os.path.join(mod_dir, OUR_MOD + ".wh.cpp"))
+    for arch, target in (("64", "x86_64-w64-mingw32"), ("32", "i686-w64-mingw32")):
+        out = os.path.join(mod_dir, arch, "%s_%s_1.dll" % (OUR_MOD, OUR_MOD_VERSION))
+        os.makedirs(os.path.dirname(out), exist_ok=True)
+        cmd = [clang, "-std=c++23", "-target", target, "-DUNICODE", "-D_UNICODE", "-DWINVER=0x0A00",
+               "-D_WIN32_WINNT=0x0A00", "-D_WIN32_IE=0x0A00", "-DNTDDI_VERSION=0x0A000008",
+               "-D__USE_MINGW_ANSI_STDIO=0", "-DWH_MOD", "-include", "windhawk_api.h",
+               "-I", os.path.join(WH_ROOT, "Compiler", "include"), "-Wno-pragma-pack",
+               "-Wno-pragma-system-header-outside-header", "-O2", "-shared", "-nostdlib++", "-o", out,
+               "-x", "c++", src, "-x", "none", os.path.join(engine_dir, arch, "windhawk.dll"),
+               "-luser32", "-lgdi32", "-luxtheme"]
+        r = subprocess.run(cmd, capture_output=True, text=True)
+        if r.returncode:
+            raise SystemExit("Mod compile failed (%s):\n%s" % (arch, r.stderr[-2000:]))
 
 
 def stage_licenses():

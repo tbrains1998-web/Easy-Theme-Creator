@@ -32,6 +32,7 @@ import preview  # noqa: E402
 import scifont  # noqa: E402
 import shell_icons  # noqa: E402
 import skin  # noqa: E402
+import standard_colors  # noqa: E402
 import taskbar  # noqa: E402
 import theme_core  # noqa: E402
 import undo  # noqa: E402
@@ -184,6 +185,10 @@ class App:
                                   activebackground="#9a3a3a", relief="flat", padx=18 if self.compact else 24,
                                   pady=6 if self.compact else 8, command=self.undo_now)
         self.undo_btn.pack(side="left", padx=(8, 12))
+        if standard_colors.available():        # a program that mixes its own and Windows' colours
+            tk.Button(right, text="🩹 Fix an app", font=font, bg=PANEL, fg=FG, activebackground="#3a3a46",
+                      activeforeground=FG, relief="flat", padx=10, pady=4,
+                      command=self.fix_app).pack(side="left", padx=(0, 12))
         tk.Checkbutton(right, text="🌙 Dark", variable=self.dark, command=self.refresh, font=font,
                        bg=BG, fg=FG, selectcolor=PANEL, activebackground=BG,
                        activeforeground=FG).pack(side="left")
@@ -457,6 +462,98 @@ class App:
             self.busy_bar.stop()
             self.busy_bar.pack_forget()
 
+    # ------------------------------------------------------------ fix an app
+
+    def fix_app(self):
+        """Programs that keep Windows' standard colours: show the list, add one by
+        clicking its window, or remove one. Each change counts from the program's
+        next start."""
+        win = tk.Toplevel(self.root)
+        win.title("Fix an app that looks wrong")
+        win.configure(bg=BG)
+        win.transient(self.root)
+        tk.Label(win, text="Some programs set a few colours themselves and take the rest from Windows,\n"
+                           "so a dark theme can make their text unreadable. Programs on this list get\n"
+                           "Windows' normal colours instead, from the next time they start.",
+                 font=self.font, bg=BG, fg=FG, justify="left").pack(anchor="w", padx=16, pady=(14, 8))
+        box = tk.Listbox(win, font=self.font, bg=PANEL, fg=FG, selectbackground=self.accent,
+                         selectforeground="white", relief="flat", height=8, width=48)
+        box.pack(fill="both", expand=True, padx=16)
+        note = tk.Label(win, text="", font=self.font, bg=BG, fg=DIM)
+        note.pack(anchor="w", padx=16, pady=(6, 0))
+        row = tk.Frame(win, bg=BG)
+        row.pack(fill="x", padx=16, pady=12)
+
+        def refresh():
+            box.delete(0, "end")
+            for n in standard_colors.apps():
+                box.insert("end", n)
+
+        def picked(result):
+            pick_btn.config(state="normal")
+            if not result:
+                note.config(text="No window picked.")
+                return
+            exe, title, _ = result
+            if not messagebox.askyesno("Fix an app", 'Give "%s" (%s) Windows\' standard colours?\n\n'
+                                       "It looks normal again the next time it starts." % (title or exe, exe),
+                                       parent=win):
+                note.config(text="")
+                return
+            try:
+                if not standard_colors.writable():
+                    note.config(text="Windows will ask once for permission…")
+                    xaml_styles.setup_access(self.hwnd)
+                standard_colors.add(exe)
+            except Exception as e:
+                messagebox.showwarning("Fix an app", str(e), parent=win)
+                return
+            refresh()
+            note.config(text="Added. Close %s and open it again." % exe)
+
+        def pick():
+            pick_btn.config(state="disabled")
+            note.config(text="Click the window that looks wrong (you have 15 seconds)…")
+            win.update_idletasks()
+            threading.Thread(target=lambda: self.later(
+                lambda r=standard_colors.pick_window(15, os.getpid()): picked(r)), daemon=True).start()
+
+        def drop():
+            sel = box.curselection()
+            if not sel:
+                return
+            exe = box.get(sel[0])
+            try:
+                if not standard_colors.writable():
+                    xaml_styles.setup_access(self.hwnd)
+                standard_colors.remove(exe)
+            except Exception as e:
+                messagebox.showwarning("Fix an app", str(e), parent=win)
+                return
+            refresh()
+            note.config(text="Removed. %s gets the theme again the next time it starts." % exe)
+
+        pick_btn = tk.Button(row, text="➕ Click a window to add it", font=self.font, bg="#2d7d46", fg="white",
+                             activebackground="#3a9a58", relief="flat", padx=10, pady=4, command=pick)
+        pick_btn.pack(side="left")
+        tk.Button(row, text="Remove", font=self.font, bg=PANEL, fg=FG, activebackground="#3a3a46",
+                  activeforeground=FG, relief="flat", padx=10, pady=4, command=drop).pack(side="left", padx=8)
+        tk.Button(row, text="Close", font=self.font, bg=PANEL, fg=FG, activebackground="#3a3a46",
+                  activeforeground=FG, relief="flat", padx=10, pady=4, command=win.destroy).pack(side="right")
+        refresh()
+        try:
+            self.dark_title_bar_for(win)
+        except Exception:
+            pass
+
+    def dark_title_bar_for(self, win):
+        win.update_idletasks()
+        hwnd = ctypes.windll.user32.GetParent(win.winfo_id())
+        on = ctypes.c_int(1)
+        for attr in (20, 19):
+            if ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, attr, ctypes.byref(on), 4) == 0:
+                break
+
     def update_undo(self):
         self.undo_btn.config(state="normal" if undo.has_snapshot() and not self.busy else "disabled")
 
@@ -520,7 +617,8 @@ class App:
                     style = skin.build(name.replace(" ", ""), self.accent,
                                        art="premium" if on["premium"] else "color",
                                        dark=self.dark.get(),
-                                       armor=bool(on.get("armor")) and self.dark.get())
+                                       armor=bool(on.get("armor")) and self.dark.get(),
+                                       classic_dark=bool(on.get("syscolors")) and self.dark.get())
                     try:
                         load_skin(style)
                     except OSError as e:
@@ -723,6 +821,10 @@ class App:
                     scifont.restore(state["fonts_before"])
                 except Exception as e:
                     failed.append(("Sci-fi font", str(e)))
+            try:
+                standard_colors.clear()               # no theme, nothing to fix
+            except Exception as e:
+                failed.append(("Fixed apps", str(e)))
             if openshell.available():
                 openshell.stop()                       # it saves its settings on exit
             restart_explorer()

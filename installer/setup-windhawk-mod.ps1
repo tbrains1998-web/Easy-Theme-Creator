@@ -4,8 +4,10 @@
 #   icon-resource-redirect           dark Control Panel side pane (Explorer only)
 #   windows-11-taskbar-styler        metal taskbar + Alien Start button
 #   windows-11-file-explorer-styler  armor plates on Explorer's bars
-# Then lets normal users write the two stylers' settings (so the app can change
-# colors without an admin prompt) and restarts Windhawk so it loads them.
+# plus our own mod (MIT, source next to it):
+#   easy-theme-creator-standard-colors  Windows' normal colours for programs the user lists
+# Then lets normal users write those mods' settings (so the app can change them
+# without an admin prompt) and restarts Windhawk so it loads them.
 param([string]$ModDir, [string]$ThemeDir = "$env:ProgramData\EasyThemeCreator\redirect")
 $ErrorActionPreference = 'Stop'
 $exe = Join-Path $env:ProgramFiles 'Windhawk\windhawk.exe'
@@ -69,12 +71,18 @@ if ($set) {
     Set-ItemProperty $set -Name "themePaths[$i]" -Value $ThemeDir -Type String
 }
 
-# 2-3. The stylers: start with no styles (the app writes them on Apply) and let users write them.
-foreach ($m in @(@('windows-11-taskbar-styler', '1.10'), @('windows-11-file-explorer-styler', '1.7'))) {
-    $set = Add-Mod $m[0] $m[1] 'explorer.exe' ''
+# 2-4. The stylers (start with no styles; the app writes them on Apply) and our own
+# "standard colours for chosen apps" mod (starts with an empty list; the app's "Fix an
+# app" button fills it). Users may write their settings.
+foreach ($m in @(@('windows-11-taskbar-styler', '1.10', 'explorer.exe'), @('windows-11-file-explorer-styler', '1.7', 'explorer.exe'),
+                 @('easy-theme-creator-standard-colors', '1.0', '*'))) {
+    $set = Add-Mod $m[0] $m[1] $m[2] ''
     if (-not $set) { continue }
     $props = Get-ItemProperty $set
-    if ($null -eq $props.theme) {
+    if ($m[0] -eq 'easy-theme-creator-standard-colors') {
+        Set-ItemProperty (Split-Path $set) -Name Exclude -Value 'explorer.exe|windhawk.exe' -Type String
+        if ($null -eq $props.'apps[0]') { Set-ItemProperty $set -Name 'apps[0]' -Value '' -Type String }
+    } elseif ($null -eq $props.theme) {
         Set-ItemProperty $set -Name theme -Value '' -Type String
         Set-ItemProperty $set -Name 'controlStyles[0].target' -Value '' -Type String
         Set-ItemProperty $set -Name 'controlStyles[0].styles[0]' -Value '' -Type String

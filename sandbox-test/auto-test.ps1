@@ -49,6 +49,9 @@ Check 'v1 files gone' (-not (Test-Path "$env:LOCALAPPDATA\Programs\Easy Theme Cr
 Check 'v2 app installed' (Test-Path "$app\app\easy_theme_creator.py")
 Check 'Open-Shell installed' (Test-Path "$env:ProgramFiles\Open-Shell\StartMenu.exe")
 Check 'Windhawk installed' (Test-Path "$env:ProgramFiles\Windhawk\windhawk.exe")
+$sc = 'HKLM:\SOFTWARE\Windhawk\Engine\Mods\easy-theme-creator-standard-colors'
+Check 'standard-colours mod registered' ((Test-Path $sc) -and (Test-Path "$env:ProgramData\Windhawk\Engine\Mods\64\easy-theme-creator-standard-colors_1.0_1.dll"))
+if (Test-Path "$sc\Settings") { Check 'standard-colours mod settings writable by users' ((Get-Acl "$sc\Settings").Sddl -match '(0x2001b|CCDCSWRPRC);;;BU') }
 Start-Sleep 10   # let Windhawk load its mods into Explorer
 
 # 3. the app itself: Apply, checks, screenshots, Undo
