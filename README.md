@@ -35,7 +35,7 @@ Windows may say *"Windows protected your PC"* because the setup isn't signed. Cl
 | **Metal taskbar** | A Windows 7-style metal taskbar with icons on the left |
 | **Alien Start** | An alien-head Start button that glows in your accent colour |
 | **Win7 Start menu** | The Windows 7 Start menu, in the same armor look |
-| **Dark classic apps** | Dark backgrounds for old-style windows and Control Panel |
+| **Dark classic apps** | Dark backgrounds, fields and buttons for old-style windows and Control Panel |
 | **Armor Explorer** | Riveted metal bars, red buttons and the Windows 7 details panel along the bottom of every folder |
 | **Sci-fi font** | The Orbitron font for file names, menus and status bars (off by default: it changes all of Windows and needs a sign-out) |
 | **Folders**, **Desktop icons** | Folder, drive, This PC, Recycle Bin and other icons drawn in your colours |
@@ -54,6 +54,10 @@ Windows may say *"Windows protected your PC"* because the setup isn't signed. Cl
 | ![Setup: what it installs](screenshots/installer-welcome.jpg) | ![Setup: the helpers, each with its own tick box](screenshots/installer-tasks.jpg) |
 | ![The app before a picture is picked](screenshots/app-start.jpg) | ![The app with a picture picked](screenshots/app.jpg) |
 
+## A program looks wrong?
+
+Some programs set a few of their own colours (a white text box, say) and take the rest from Windows. With the dark theme those two halves stop matching and the text turns unreadable. Click **Fix an app** next to Undo, then click the window that looks wrong. From its next start that program gets Windows' normal colours and no skin, so it looks the way it was designed, while everything else keeps the theme. The same window lists the programs you've fixed, and Undo clears the list.
+
 ## Undo and uninstall
 
 **Undo** puts back exactly how Windows looked before your first Apply, every part of it, however many themes you tried in between.
@@ -65,7 +69,7 @@ Uninstalling from **Settings > Apps** does the same Undo first, then removes the
 The setup installs the app with its own private copy of Python, so there is nothing else to install. It also installs three free, open-source helpers, each with its own tick box:
 
 - **[SecureUxTheme](https://github.com/namazso/SecureUxTheme)** by namazso: Windows only loads its own built-in window skins; this lets it load the one the app makes. Needed for *Windows*, *Metal buttons* and *Armor Explorer*. This is the part that needs the one restart.
-- **[Windhawk](https://windhawk.net)** by Ramen Software, with three of its mods, all used only inside Explorer: *Windows 11 Taskbar Styler* (the metal taskbar and Start button), *Windows 11 File Explorer Styler* (the armor bars) and *Resource Redirect* (the dark Control Panel pane and the bottom details panel).
+- **[Windhawk](https://windhawk.net)** by Ramen Software, with three of its mods, all used only inside Explorer: *Windows 11 Taskbar Styler* (the metal taskbar and Start button), *Windows 11 File Explorer Styler* (the armor bars) and *Resource Redirect* (the dark Control Panel pane and the bottom details panel). Easy Theme Creator adds one small mod of its own (source in `installer/windhawk-mod`) for the *Fix an app* feature.
 - **[Open-Shell](https://github.com/Open-Shell/Open-Shell-Menu)**, Start menu part only: the Windows 7 Start menu.
 
 Some antivirus programs flag theme patchers like SecureUxTheme. It is a well-known open-source tool; the setup only installs the official release, checked against its hash.

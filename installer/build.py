@@ -22,7 +22,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 STAGE = os.path.join(HERE, "stage")
 OUT = os.path.join(ROOT, "dist")
-VERSION = "2.0"
+VERSION = "2.1"
 
 APP_FILES = ["xaml_styles.py", "standard_colors.py", "openshell.py", "openshell_skin.py", "alien_icons.py", "armor.py", "assets.py", "cpl_panes.py", "easy_theme_creator.py",
              "folders.py", "launch.pyw", "layout.py", "premium.py", "preview.py", "scifont.py",
