@@ -166,7 +166,7 @@ def stage_deps():
 
 
 OUR_MOD = "easy-theme-creator-standard-colors"
-OUR_MOD_VERSION = "1.1"
+OUR_MOD_VERSION = "1.2"
 WH_ROOT = os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "Windhawk")
 
 

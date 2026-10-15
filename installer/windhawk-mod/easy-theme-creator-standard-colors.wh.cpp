@@ -2,7 +2,7 @@
 // @id              easy-theme-creator-standard-colors
 // @name            Easy Theme Creator - readable text
 // @description     Dialog text follows the theme (light on dark, dark on light); programs on the list get Windows' normal light colours and no window skin
-// @version         1.1
+// @version         1.2
 // @author          tbrains1998-web
 // @github          https://github.com/tbrains1998-web/Easy-Theme-Creator
 // @include         *
@@ -18,7 +18,8 @@
 Panel windows) Windows draws the labels in plain black whatever the theme says, so
 on a dark theme they disappear. Where a page sets no text colour of its own, this
 mod gives its labels the theme's text colour instead: light on a dark theme, dark on
-a light one. Pages that choose their own colours keep them.
+a light one. The same goes for checkbox, radio and tab names, which Windows draws
+black when the theme gives them no colour. Anything with its own colour keeps it.
 
 **Standard colours for chosen apps.** Some programs set a few of their own colours (a white text box, say) and take the
 rest from Windows. With a dark theme those two halves stop matching and text becomes
@@ -41,6 +42,7 @@ also edit it here. Entries are executable names, e.g. `Notepad++.exe`.
 
 #include <windows.h>
 #include <uxtheme.h>
+#include <vssym32.h>
 #include <wchar.h>
 
 // Windows' default light palette, by COLOR_* index.
@@ -155,6 +157,49 @@ static LRESULT WINAPI DefDlgProcA_hook(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp
     return DialogText(DefDlgProcA_orig, hwnd, msg, wp, lp);
 }
 
+// Themed text. Checkbox and radio labels, tab names and the like are drawn with
+// DrawThemeText, which uses the part's TEXTCOLOR - and plain black when the theme has
+// none for that part (it ignores the DC's colour). Those parts get the system text
+// colour instead, from the same theme: light on a dark one, black on a light one.
+// Callers that pass their own colour, and parts the theme colours, are left alone.
+using DrawThemeTextEx_t = HRESULT(WINAPI*)(HTHEME, HDC, int, int, LPCWSTR, int, DWORD, LPRECT, const DTTOPTS*);
+static DrawThemeTextEx_t DrawThemeTextEx_orig;
+using DrawThemeText_t = HRESULT(WINAPI*)(HTHEME, HDC, int, int, LPCWSTR, int, DWORD, DWORD, LPCRECT);
+static DrawThemeText_t DrawThemeText_orig;
+
+static bool HasTextColor(HTHEME theme, int part, int state) {
+    COLORREF c;
+    return SUCCEEDED(GetThemeColor(theme, part, state, TMT_TEXTCOLOR, &c));
+}
+
+static HRESULT WINAPI DrawThemeTextEx_hook(HTHEME theme, HDC dc, int part, int state, LPCWSTR text,
+                                           int len, DWORD flags, LPRECT rect, const DTTOPTS* opts) {
+    if ((!opts || !(opts->dwFlags & DTT_TEXTCOLOR)) && !HasTextColor(theme, part, state)) {
+        DTTOPTS o = {};
+        if (opts && opts->dwSize >= sizeof(DTTOPTS)) {
+            o = *opts;
+        } else if (opts) {
+            CopyMemory(&o, opts, opts->dwSize);
+        }
+        o.dwSize = sizeof(o);
+        o.dwFlags |= DTT_TEXTCOLOR;
+        o.crText = GetSysColor(COLOR_BTNTEXT);
+        return DrawThemeTextEx_orig(theme, dc, part, state, text, len, flags, rect, &o);
+    }
+    return DrawThemeTextEx_orig(theme, dc, part, state, text, len, flags, rect, opts);
+}
+
+static HRESULT WINAPI DrawThemeText_hook(HTHEME theme, HDC dc, int part, int state, LPCWSTR text,
+                                         int len, DWORD flags, DWORD flags2, LPCRECT rect) {
+    if (DrawThemeTextEx_orig && rect && !HasTextColor(theme, part, state)) {
+        DTTOPTS o = {sizeof(o), DTT_TEXTCOLOR};
+        o.crText = GetSysColor(COLOR_BTNTEXT);
+        RECT r = *rect;
+        return DrawThemeTextEx_orig(theme, dc, part, state, text, len, flags, &r, &o);
+    }
+    return DrawThemeText_orig(theme, dc, part, state, text, len, flags, flags2, rect);
+}
+
 static bool ThisProcessIsListed() {
     WCHAR path[MAX_PATH];
     DWORD n = GetModuleFileNameW(NULL, path, MAX_PATH);
@@ -192,14 +237,16 @@ BOOL Wh_ModInit() {
     }
     Hook(user32, "DefDlgProcW", (void*)DefDlgProcW_hook, &DefDlgProcW_orig);
     Hook(user32, "DefDlgProcA", (void*)DefDlgProcA_hook, &DefDlgProcA_orig);
-    if (!ThisProcessIsListed()) {
-        return TRUE;
-    }
-    Wh_Log(L"standard colours for this program");
     HMODULE uxtheme = LoadLibraryW(L"uxtheme.dll");
     if (!uxtheme) {
         return TRUE;
     }
+    if (!ThisProcessIsListed()) {
+        Hook(uxtheme, "DrawThemeTextEx", (void*)DrawThemeTextEx_hook, &DrawThemeTextEx_orig);
+        Hook(uxtheme, "DrawThemeText", (void*)DrawThemeText_hook, &DrawThemeText_orig);
+        return TRUE;
+    }
+    Wh_Log(L"standard colours for this program");
     Hook(user32, "GetSysColor", (void*)GetSysColor_hook, &GetSysColor_orig);
     Hook(user32, "GetSysColorBrush", (void*)GetSysColorBrush_hook, &GetSysColorBrush_orig);
     Hook(uxtheme, "OpenThemeData", (void*)OpenThemeData_hook, &OpenThemeData_orig);

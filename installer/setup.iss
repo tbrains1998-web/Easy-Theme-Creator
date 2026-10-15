@@ -53,8 +53,8 @@ Source: "{#Stage}\README.txt"; DestDir: "{app}"; Flags: ignoreversion isreadme
 Source: "{#Stage}\deps\SecureUxTheme_x64.msi"; DestDir: "{tmp}"; Tasks: secureux; Flags: deleteafterinstall
 Source: "{#Stage}\deps\OpenShellSetup64_4_4_198.msi"; DestDir: "{tmp}"; Tasks: openshell; Flags: deleteafterinstall
 Source: "{#Stage}\deps\windhawk_setup.exe"; DestDir: "{tmp}"; Tasks: windhawk; Flags: deleteafterinstall
-Source: "{#Stage}\deps\setup-windhawk-mod.ps1"; DestDir: "{tmp}"; Tasks: windhawk; Flags: deleteafterinstall
-Source: "{#Stage}\deps\windhawk-mod\*"; DestDir: "{tmp}\windhawk-mod"; Tasks: windhawk; Flags: recursesubdirs deleteafterinstall
+Source: "{#Stage}\deps\setup-windhawk-mod.ps1"; DestDir: "{tmp}"; Check: ModsStep; Flags: deleteafterinstall
+Source: "{#Stage}\deps\windhawk-mod\*"; DestDir: "{tmp}\windhawk-mod"; Check: ModsStep; Flags: recursesubdirs deleteafterinstall
 
 [Registry]
 ; Open-Shell would show its settings window on the first Start click; the app sets it up instead.
@@ -70,7 +70,7 @@ Name: "{autodesktop}\Easy Theme Creator"; Filename: "{app}\python\pythonw.exe"; 
 Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -Command ""Enable-ComputerRestore -Drive $env:SystemDrive -EA SilentlyContinue; Checkpoint-Computer -Description 'Before Easy Theme Creator' -RestorePointType MODIFY_SETTINGS -EA SilentlyContinue"""; StatusMsg: "{code:StepStatus|restore}"; Tasks: restorepoint; BeforeInstall: BeginStep('restore'); Flags: 64bit runhidden waituntilterminated
 Filename: "{sys}\msiexec.exe"; Parameters: "/i ""{tmp}\SecureUxTheme_x64.msi"" /qn /norestart"; StatusMsg: "{code:StepStatus|secureux}"; Tasks: secureux; BeforeInstall: BeginStep('secureux'); Flags: 64bit waituntilterminated
 Filename: "{tmp}\windhawk_setup.exe"; Parameters: "/S /STANDARD"; StatusMsg: "{code:StepStatus|windhawk}"; Tasks: windhawk; Check: not WindhawkInstalled; BeforeInstall: BeginStep('windhawk'); Flags: waituntilterminated
-Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{tmp}\setup-windhawk-mod.ps1"" -ModDir ""{tmp}\windhawk-mod"""; StatusMsg: "{code:StepStatus|mods}"; Tasks: windhawk; BeforeInstall: BeginStep('mods'); Flags: 64bit runhidden waituntilterminated
+Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{tmp}\setup-windhawk-mod.ps1"" -ModDir ""{tmp}\windhawk-mod"""; StatusMsg: "{code:StepStatus|mods}"; Check: ModsStep; BeforeInstall: BeginStep('mods'); Flags: 64bit runhidden waituntilterminated
 Filename: "{sys}\msiexec.exe"; Parameters: "/i ""{tmp}\OpenShellSetup64_4_4_198.msi"" ADDLOCAL=StartMenu /qn /norestart"; StatusMsg: "{code:StepStatus|openshell}"; Tasks: openshell; BeforeInstall: BeginStep('openshell'); Flags: 64bit waituntilterminated
 Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -Command ""$s = Join-Path $env:ProgramFiles 'Open-Shell\Skins'; $d = Join-Path $s 'Easy Theme Armor.skin7'; if ((Test-Path (Join-Path $s 'Midnight.skin7')) -and -not (Test-Path $d)) {{ Copy-Item (Join-Path $s 'Midnight.skin7') $d }; if (Test-Path $d) {{ icacls $d /grant '*S-1-5-32-545:M' | Out-Null }"""; StatusMsg: "{code:StepStatus|skin}"; BeforeInstall: BeginStep('skin'); AfterInstall: FinishSteps; Flags: 64bit runhidden waituntilterminated
 Filename: "{app}\python\pythonw.exe"; Parameters: """{app}\app\launch.pyw"""; WorkingDir: "{app}\app"; Description: "Open Easy Theme Creator now"; Flags: postinstall nowait skipifsilent runasoriginaluser
@@ -120,7 +120,15 @@ begin
     RegKeyExists(HKLM64, 'SOFTWARE\Windhawk\Engine\Mods\windows-11-taskbar-styler') and
     RegKeyExists(HKLM64, 'SOFTWARE\Windhawk\Engine\Mods\windows-11-file-explorer-styler') and
     RegQueryStringValue(HKLM64, 'SOFTWARE\Windhawk\Engine\Mods\easy-theme-creator-standard-colors', 'Version', ModVersion) and
-    (ModVersion = '1.1');     { an older version of our mod: run the mods step to update it }
+    (ModVersion = '1.2');     { an older version of our mod: run the mods step to update it }
+end;
+
+{ The mods step runs when its task is ticked, and also on an upgrade whose own mod is
+  outdated: Inno remembers the earlier install's task choices, and there the task was
+  hidden (mods ready), so it stays unticked and the new mod version would never land. }
+function ModsStep: Boolean;
+begin
+  Result := WizardIsTaskSelected('windhawk') or (WindhawkInstalled and not WindhawkModsReady);
 end;
 
 const
@@ -179,7 +187,7 @@ begin
   if WizardIsTaskSelected('windhawk') and not WindhawkInstalled then
     AddStep('windhawk', 'Install Windhawk', 'Installing Windhawk...',
       'Runs the taskbar, Start button and Explorer looks.', 15);
-  if WizardIsTaskSelected('windhawk') then
+  if ModsStep then
     AddStep('mods', 'Set up the Windhawk mods', 'Setting up the Windhawk mods...',
       'Metal taskbar, Alien Start button, Armor Explorer, dark Control Panel.', 6);
   if WizardIsTaskSelected('openshell') then

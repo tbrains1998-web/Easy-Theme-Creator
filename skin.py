@@ -440,6 +440,12 @@ def build(name, accent_hex, progress=None, art="color", dark=True, armor=False, 
                                                 else painter.text_accent())
             struct.pack_into("<I", table, off + 32, new)
         off = (off + 32 + (0 if inline else size) + 7) & ~7
+    if classic_dark and dark:
+        # Pictures only the plain classic controls use (edit-box backgrounds, list-box
+        # borders) are Windows' light designs with no dark twin: dark like light-only art.
+        for iid, refs in image_refs.items():
+            if all(k[0] in DARK_CLASSIC for k in refs):
+                image_mode[iid] = "invert"
 
     replaced, added = {}, []                     # image id -> new PNG; new (id, lang, PNG)
     if armor:

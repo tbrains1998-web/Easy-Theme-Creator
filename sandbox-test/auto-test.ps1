@@ -53,6 +53,18 @@ $sc = 'HKLM:\SOFTWARE\Windhawk\Engine\Mods\easy-theme-creator-standard-colors'
 $scDll = if (Test-Path $sc) { (Get-ItemProperty $sc).LibraryFileName } else { '' }
 Check 'standard-colours mod registered' ($scDll -and (Test-Path "$env:ProgramData\Windhawk\Engine\Mods\64\$scDll")) $scDll
 if (Test-Path "$sc\Settings") { Check 'standard-colours mod settings writable by users' ((Get-Acl "$sc\Settings").Sddl -match '(0x2001b|CCDCSWRPRC);;;BU') }
+$newVersion = (Get-ItemProperty $sc -ErrorAction SilentlyContinue).Version
+
+# 2b. upgrade over an install whose own mod is older. Inno remembers the earlier
+# install's tasks, where "Windhawk + mods" was hidden (ready) and so unticked: setup
+# must still update our mod (2.3 first missed it on a real upgrade).
+Set-ItemProperty $sc -Name Version -Value '1.0'
+$p = Start-Process 'C:\sbxdist\Easy Theme Creator Setup.exe' -ArgumentList "/SILENT /SUPPRESSMSGBOXES /NORESTART /TASKS=`"desktopicon`" /LOG=`"$res\upgrade.log`"" -PassThru
+$null = $p.Handle
+$p.WaitForExit()
+$after = Get-ItemProperty $sc -ErrorAction SilentlyContinue
+Check 'upgrade without the Windhawk task updates our mod' ($p.ExitCode -eq 0 -and $after.Version -eq $newVersion -and
+    (Test-Path "$env:ProgramData\Windhawk\Engine\Mods\64\$($after.LibraryFileName)")) "exit $($p.ExitCode), version $($after.Version), want $newVersion"
 Start-Sleep 10   # let Windhawk load its mods into Explorer
 
 # 3. the app itself: Apply, checks, screenshots, Undo

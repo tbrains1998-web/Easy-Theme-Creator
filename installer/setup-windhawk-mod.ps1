@@ -11,6 +11,11 @@
 # without an admin prompt) and restarts Windhawk so it loads them.
 param([string]$ModDir, [string]$ThemeDir = "$env:ProgramData\EasyThemeCreator\redirect")
 $ErrorActionPreference = 'Stop'
+trap {      # setup runs this hidden and only sees an exit code: keep the reason
+    "$(Get-Date -Format s)  line $($_.InvocationInfo.ScriptLineNumber): $_" |
+        Out-File -Append -Encoding utf8 (Join-Path $env:ProgramData 'EasyThemeCreator\setup-windhawk-mod.log')
+    exit 1
+}
 $exe = Join-Path $env:ProgramFiles 'Windhawk\windhawk.exe'
 if (-not (Test-Path $exe)) { Write-Output 'Windhawk is not installed; skipping the mods.'; exit 0 }
 $data = Join-Path $env:ProgramData 'Windhawk'
@@ -24,7 +29,11 @@ function Add-Mod([string]$id, [string]$version, [string]$include, [string]$custo
         if ($files.Count -eq 0) { continue }
         $dst = Join-Path $data "Engine\Mods\$arch"
         New-Item -ItemType Directory -Force $dst | Out-Null
-        Copy-Item $files.FullName $dst -Force
+        # Mod DLL names carry version + build id, so one already there is the same file -
+        # and loaded in running programs (locked) on an upgrade: copy only new ones.
+        foreach ($f in $files) {
+            if (-not (Test-Path (Join-Path $dst $f.Name))) { Copy-Item $f.FullName $dst }
+        }
         # an older version's DLL (still loaded in running programs until they restart: skip those)
         Get-ChildItem $dst -Filter "$id`_*.dll" | Where-Object { $_.Name -ne $files[0].Name } |
             ForEach-Object { Remove-Item $_.FullName -Force -ErrorAction SilentlyContinue }
@@ -79,7 +88,7 @@ if ($set) {
 # "standard colours for chosen apps" mod (starts with an empty list; the app's "Fix an
 # app" button fills it). Users may write their settings.
 foreach ($m in @(@('windows-11-taskbar-styler', '1.10', 'explorer.exe'), @('windows-11-file-explorer-styler', '1.7', 'explorer.exe'),
-                 @('easy-theme-creator-standard-colors', '1.1', '*'))) {
+                 @('easy-theme-creator-standard-colors', '1.2', '*'))) {
     $set = Add-Mod $m[0] $m[1] $m[2] ''
     if (-not $set) { continue }
     $props = Get-ItemProperty $set
