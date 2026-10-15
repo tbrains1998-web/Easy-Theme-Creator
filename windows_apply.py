@@ -146,7 +146,13 @@ SYSCOLOR_IDS = {
 }
 
 
-def dark_syscolors(accent):
+def dark_palette(accent):
+    """The dark classic-app palette as {system colour index: (r, g, b)} - what
+    dark_syscolors() sets live, and what the skin's own colour table gets too."""
+    return {SYSCOLOR_IDS[n]: rgb for n, rgb in _dark_colors(accent).items()}
+
+
+def _dark_colors(accent):
     r, g, b = theme_core._rgb(accent)
     m = max(r, g, b) or 1
     bright = tuple(min(255, int(v / m * 255 * 0.75 + 255 * 0.29)) for v in (r, g, b))
@@ -164,6 +170,11 @@ def dark_syscolors(accent):
         "GradientActiveTitle": (32, 32, 36), "GradientInactiveTitle": (24, 24, 27),
         "MenuHilight": deep, "MenuBar": (24, 24, 27),
     }
+    return colors
+
+
+def dark_syscolors(accent):
+    colors = _dark_colors(accent)
     for name, (cr, cg, cb) in colors.items():
         _set(r"Control Panel\Colors", name, "%d %d %d" % (cr, cg, cb))
     ids = (ctypes.c_int * len(colors))(*[SYSCOLOR_IDS[n] for n in colors])

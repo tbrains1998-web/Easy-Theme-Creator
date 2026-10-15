@@ -237,6 +237,16 @@ def body():
     standard_colors.remove("python.exe")
     check("app removed from the fixed list", "python.exe" not in standard_colors.apps())
 
+    # ---------------------------------------------------------- readable dialog text (same mod)
+    # Tab-page labels (folder Properties...) get the system text colour instead of black.
+    probe_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dialog_text_probe.py")
+    got = subprocess.run([py, probe_file], capture_output=True, text=True, timeout=90).stdout.split()
+    say("Properties page label colour / system text colour / texture:", got)
+    check("Properties labels get the theme's text colour", len(got) == 3 and got[2] == "1" and got[0] == got[1], got)
+    mods = subprocess.run(["tasklist", "/m", "easy-theme-creator-standard-colors_*", "/fi", "imagename eq explorer.exe"],
+                          capture_output=True, text=True).stdout
+    check("readable-text mod loaded in Explorer", "explorer.exe" in mods.lower(), mods.strip()[-200:])
+
     # ---------------------------------------------------------- screenshots
     on_main(root.withdraw)                           # the test window must not cover the screen
     shot("1-desktop", wait=6)

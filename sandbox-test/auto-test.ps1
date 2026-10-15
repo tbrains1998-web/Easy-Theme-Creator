@@ -50,7 +50,8 @@ Check 'v2 app installed' (Test-Path "$app\app\easy_theme_creator.py")
 Check 'Open-Shell installed' (Test-Path "$env:ProgramFiles\Open-Shell\StartMenu.exe")
 Check 'Windhawk installed' (Test-Path "$env:ProgramFiles\Windhawk\windhawk.exe")
 $sc = 'HKLM:\SOFTWARE\Windhawk\Engine\Mods\easy-theme-creator-standard-colors'
-Check 'standard-colours mod registered' ((Test-Path $sc) -and (Test-Path "$env:ProgramData\Windhawk\Engine\Mods\64\easy-theme-creator-standard-colors_1.0_1.dll"))
+$scDll = if (Test-Path $sc) { (Get-ItemProperty $sc).LibraryFileName } else { '' }
+Check 'standard-colours mod registered' ($scDll -and (Test-Path "$env:ProgramData\Windhawk\Engine\Mods\64\$scDll")) $scDll
 if (Test-Path "$sc\Settings") { Check 'standard-colours mod settings writable by users' ((Get-Acl "$sc\Settings").Sddl -match '(0x2001b|CCDCSWRPRC);;;BU') }
 Start-Sleep 10   # let Windhawk load its mods into Explorer
 

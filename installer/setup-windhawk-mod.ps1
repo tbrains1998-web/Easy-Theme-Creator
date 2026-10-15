@@ -5,7 +5,8 @@
 #   windows-11-taskbar-styler        metal taskbar + Alien Start button
 #   windows-11-file-explorer-styler  armor plates on Explorer's bars
 # plus our own mod (MIT, source next to it):
-#   easy-theme-creator-standard-colors  Windows' normal colours for programs the user lists
+#   easy-theme-creator-standard-colors  readable dialog text everywhere + Windows' normal
+#                                       colours for programs the user lists
 # Then lets normal users write those mods' settings (so the app can change them
 # without an admin prompt) and restarts Windhawk so it loads them.
 param([string]$ModDir, [string]$ThemeDir = "$env:ProgramData\EasyThemeCreator\redirect")
@@ -24,6 +25,9 @@ function Add-Mod([string]$id, [string]$version, [string]$include, [string]$custo
         $dst = Join-Path $data "Engine\Mods\$arch"
         New-Item -ItemType Directory -Force $dst | Out-Null
         Copy-Item $files.FullName $dst -Force
+        # an older version's DLL (still loaded in running programs until they restart: skip those)
+        Get-ChildItem $dst -Filter "$id`_*.dll" | Where-Object { $_.Name -ne $files[0].Name } |
+            ForEach-Object { Remove-Item $_.FullName -Force -ErrorAction SilentlyContinue }
         foreach ($rt in 'libc++.whl', 'libunwind.whl', 'windhawk-mod-shim.dll') {
             if ((Test-Path (Join-Path $src $rt)) -and -not (Test-Path (Join-Path $dst $rt))) {
                 Copy-Item (Join-Path $src $rt) $dst
@@ -75,12 +79,12 @@ if ($set) {
 # "standard colours for chosen apps" mod (starts with an empty list; the app's "Fix an
 # app" button fills it). Users may write their settings.
 foreach ($m in @(@('windows-11-taskbar-styler', '1.10', 'explorer.exe'), @('windows-11-file-explorer-styler', '1.7', 'explorer.exe'),
-                 @('easy-theme-creator-standard-colors', '1.0', '*'))) {
+                 @('easy-theme-creator-standard-colors', '1.1', '*'))) {
     $set = Add-Mod $m[0] $m[1] $m[2] ''
     if (-not $set) { continue }
     $props = Get-ItemProperty $set
     if ($m[0] -eq 'easy-theme-creator-standard-colors') {
-        Set-ItemProperty (Split-Path $set) -Name Exclude -Value 'explorer.exe|windhawk.exe' -Type String
+        Set-ItemProperty (Split-Path $set) -Name Exclude -Value 'windhawk.exe' -Type String
         if ($null -eq $props.'apps[0]') { Set-ItemProperty $set -Name 'apps[0]' -Value '' -Type String }
     } elseif ($null -eq $props.theme) {
         Set-ItemProperty $set -Name theme -Value '' -Type String

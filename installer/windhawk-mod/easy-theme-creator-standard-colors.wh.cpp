@@ -1,21 +1,26 @@
 // ==WindhawkMod==
 // @id              easy-theme-creator-standard-colors
-// @name            Easy Theme Creator - standard colours for chosen apps
-// @description     Programs on the list get Windows' normal light colours and no window skin, so a dark theme can't make them unreadable
-// @version         1.0
+// @name            Easy Theme Creator - readable text
+// @description     Dialog text follows the theme (light on dark, dark on light); programs on the list get Windows' normal light colours and no window skin
+// @version         1.1
 // @author          tbrains1998-web
 // @github          https://github.com/tbrains1998-web/Easy-Theme-Creator
 // @include         *
-// @exclude         explorer.exe
 // @exclude         windhawk.exe
 // @compilerOptions -lgdi32 -luxtheme
 // ==/WindhawkMod==
 
 // ==WindhawkModReadme==
 /*
-# Easy Theme Creator - standard colours for chosen apps
+# Easy Theme Creator - readable text
 
-Some programs set a few of their own colours (a white text box, say) and take the
+**Dialog text follows the theme.** On tab pages (a folder's Properties, most Control
+Panel windows) Windows draws the labels in plain black whatever the theme says, so
+on a dark theme they disappear. Where a page sets no text colour of its own, this
+mod gives its labels the theme's text colour instead: light on a dark theme, dark on
+a light one. Pages that choose their own colours keep them.
+
+**Standard colours for chosen apps.** Some programs set a few of their own colours (a white text box, say) and take the
 rest from Windows. With a dark theme those two halves stop matching and text becomes
 unreadable. Put such a program on the list and, from its next start, it gets Windows'
 normal light colours and draws its controls without the window skin - the way it was
@@ -117,6 +122,39 @@ using IsAppThemed_t = BOOL(WINAPI*)();
 static IsAppThemed_t IsAppThemed_orig;
 static BOOL WINAPI IsAppThemed_hook() { return FALSE; }
 
+// Dialog text. A tab page's WM_CTLCOLOR* answer comes from uxtheme's page texture:
+// it returns the tab-body brush and makes the text background transparent but sets no
+// text colour, so labels draw in GDI's default black - unreadable on a dark page. When
+// that is what happened (texture on, background just made transparent, text colour
+// untouched), the label gets the system text colour, which the theme sets: light on a
+// dark theme, black on a light one. Pages that set their own colours are left alone.
+using DefDlgProc_t = LRESULT(WINAPI*)(HWND, UINT, WPARAM, LPARAM);
+static DefDlgProc_t DefDlgProcW_orig;
+static DefDlgProc_t DefDlgProcA_orig;
+
+static LRESULT DialogText(DefDlgProc_t orig, HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    if (msg != WM_CTLCOLORSTATIC && msg != WM_CTLCOLORBTN && msg != WM_CTLCOLORDLG) {
+        return orig(hwnd, msg, wp, lp);
+    }
+    HDC dc = (HDC)wp;
+    COLORREF text = GetTextColor(dc);
+    int mode = GetBkMode(dc);
+    LRESULT r = orig(hwnd, msg, wp, lp);
+    if (r && mode != TRANSPARENT && GetBkMode(dc) == TRANSPARENT && GetTextColor(dc) == text &&
+        IsThemeDialogTextureEnabled(hwnd)) {
+        SetTextColor(dc, GetSysColor(COLOR_BTNTEXT));
+    }
+    return r;
+}
+
+static LRESULT WINAPI DefDlgProcW_hook(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    return DialogText(DefDlgProcW_orig, hwnd, msg, wp, lp);
+}
+
+static LRESULT WINAPI DefDlgProcA_hook(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    return DialogText(DefDlgProcA_orig, hwnd, msg, wp, lp);
+}
+
 static bool ThisProcessIsListed() {
     WCHAR path[MAX_PATH];
     DWORD n = GetModuleFileNameW(NULL, path, MAX_PATH);
@@ -148,14 +186,19 @@ static void Hook(HMODULE module, PCSTR name, void* hook, T* original) {
 }
 
 BOOL Wh_ModInit() {
+    HMODULE user32 = GetModuleHandleW(L"user32.dll");
+    if (!user32) {
+        return FALSE;                                   // no windows in this program: unload
+    }
+    Hook(user32, "DefDlgProcW", (void*)DefDlgProcW_hook, &DefDlgProcW_orig);
+    Hook(user32, "DefDlgProcA", (void*)DefDlgProcA_hook, &DefDlgProcA_orig);
     if (!ThisProcessIsListed()) {
-        return FALSE;                                   // not for this program: unload
+        return TRUE;
     }
     Wh_Log(L"standard colours for this program");
-    HMODULE user32 = GetModuleHandleW(L"user32.dll");
     HMODULE uxtheme = LoadLibraryW(L"uxtheme.dll");
-    if (!user32 || !uxtheme) {
-        return FALSE;
+    if (!uxtheme) {
+        return TRUE;
     }
     Hook(user32, "GetSysColor", (void*)GetSysColor_hook, &GetSysColor_orig);
     Hook(user32, "GetSysColorBrush", (void*)GetSysColorBrush_hook, &GetSysColorBrush_orig);

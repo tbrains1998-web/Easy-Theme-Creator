@@ -112,12 +112,15 @@ begin
 end;
 
 function WindhawkModsReady: Boolean;
+var
+  ModVersion: String;
 begin
   Result := WindhawkInstalled and
     RegKeyExists(HKLM64, 'SOFTWARE\Windhawk\Engine\Mods\icon-resource-redirect') and
     RegKeyExists(HKLM64, 'SOFTWARE\Windhawk\Engine\Mods\windows-11-taskbar-styler') and
     RegKeyExists(HKLM64, 'SOFTWARE\Windhawk\Engine\Mods\windows-11-file-explorer-styler') and
-    RegKeyExists(HKLM64, 'SOFTWARE\Windhawk\Engine\Mods\easy-theme-creator-standard-colors');
+    RegQueryStringValue(HKLM64, 'SOFTWARE\Windhawk\Engine\Mods\easy-theme-creator-standard-colors', 'Version', ModVersion) and
+    (ModVersion = '1.1');     { an older version of our mod: run the mods step to update it }
 end;
 
 const

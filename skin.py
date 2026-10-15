@@ -176,21 +176,6 @@ class Painter:
         """Saturated accent that still reads on near-black (e.g. #FF4E4E for red)."""
         return tuple(int(v) for v in np.clip(self.dir * 235 + 30, 0, 255))
 
-    def two_way_accent(self):
-        """Mid-tone accent that reads on light pages and dark dialogs alike (~3.9:1 on
-        both): relative luminance 0.2, darker or lighter versions of the accent hue."""
-        def lum(c):
-            lin = np.where(c <= 0.04045, c / 12.92, ((c + 0.055) / 1.055) ** 2.4)
-            return float(lin @ np.array([0.2126, 0.7152, 0.0722]))
-
-        def at(s):                      # 0..1: black -> accent, 1..2: accent -> white
-            return self.dir * s if s <= 1 else self.dir + (1 - self.dir) * (s - 1)
-        lo, hi = 0.0, 2.0
-        for _ in range(30):
-            mid = (lo + hi) / 2
-            lo, hi = (mid, hi) if lum(at(mid)) < 0.2 else (lo, mid)
-        return tuple(int(v * 255 + 0.5) for v in np.clip(at(lo), 0, 1))
-
     def readable(self, val, prop, state):
         """Colors for light-only screens made dark: backgrounds dark gunmetal, body text
         near-white, secondary text light grey, links/titles bright accent. Never dark text."""
@@ -316,13 +301,10 @@ def _mode(cls, dark=True):
 # The same skin file carries Windows' own dark versions of them; with "Dark classic
 # apps" the plain classes take over the dark designs, so those apps get dark fields
 # and dark buttons to go with the light text the dark colour palette gives them.
-# Not "tab": property-sheet pages (folder Properties, most Control Panel dialogs) draw
-# their labels in plain black whatever the theme or palette says (the tab-page texture
-# sets no text colour), so the tab page has to stay light to keep them readable.
-DARK_CLASSIC = {"edit", "button", "combobox", "listbox", "listview", "treeview",
+# Tab pages (folder Properties, most Control Panel dialogs) draw their labels in plain
+# black whatever the theme says; our Windhawk mod gives them the system text colour.
+DARK_CLASSIC = {"edit", "button", "combobox", "listbox", "listview", "treeview", "tab",
                 "static", "tooltip", "spin", "progress"}
-# Group-box captions sit on both: light tab pages and dark dialogs.
-TWO_WAY_TEXT = {("button", 4, 0)}
 DARK_SOURCE = "darkmode_darktheme::"
 
 
@@ -406,6 +388,18 @@ def build(name, accent_hex, progress=None, art="color", dark=True, armor=False, 
     pe.close()
     if classic_dark and dark:
         _copy_dark_classes(table, names)
+        # The skin's own system-colour table (SysMetrics, props 1601-1631 = COLOR_0..30)
+        # is Windows' light palette. Themed checkboxes and radio buttons take their text
+        # colour from it (black on the dark pages), so it gets the dark palette Apply sets.
+        import windows_apply
+        palette = windows_apply.dark_palette(accent_hex)
+        sysm = {i for i, n in enumerate(names) if n.lower() == "sysmetrics"}
+        off = 0
+        while off + 32 <= len(table):
+            prop, kind, cls, part, state, inline, _, size = struct.unpack_from("<8i", table, off)
+            if cls in sysm and kind == 204 and not inline and size >= 4 and (prop - 1601) in palette:
+                struct.pack_into("<I", table, off + 32, _ref(palette[prop - 1601]))   # 00BBGGRR
+            off = (off + 32 + (0 if inline else size) + 7) & ~7
 
     # Property records: 8 ints (name, type, class, part, state, inline value, 0, size) + data.
     painter = Painter(accent_hex, strength=1.0)
@@ -444,8 +438,6 @@ def build(name, accent_hex, progress=None, art="color", dark=True, armor=False, 
             if armor and key[0] in ARMOR_TEXT and prop == 3803:
                 new = (val & 0xFF000000) | _ref((120, 120, 120) if state in (4, 6)   # disabled
                                                 else painter.text_accent())
-            if classic_dark and dark and key in TWO_WAY_TEXT and prop == 3803:
-                new = (val & 0xFF000000) | _ref(painter.two_way_accent())
             struct.pack_into("<I", table, off + 32, new)
         off = (off + 32 + (0 if inline else size) + 7) & ~7
 
