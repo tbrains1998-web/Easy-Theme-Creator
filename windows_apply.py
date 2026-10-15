@@ -5,6 +5,7 @@ write the same settings to the current user's registry ourselves and tell
 Windows to reload them. Nothing here needs admin rights.
 """
 import ctypes
+import os
 import winreg
 
 import assets
@@ -182,6 +183,77 @@ def dark_syscolors(accent):
     ctypes.windll.user32.SetSysColors(len(colors), ids, vals)     # live, for this session
 
 
+ACCENT_COLORS = ("Hilight", "MenuHilight", "HotTrackingColor")   # the ones that follow the accent
+# Windows 11's own classic colours, for when the default user's are missing (or ours).
+WINDOWS_COLORS = {
+    "Scrollbar": "200 200 200", "Background": "0 0 0", "ActiveTitle": "153 180 209",
+    "InactiveTitle": "191 205 219", "Menu": "240 240 240", "Window": "255 255 255",
+    "WindowFrame": "100 100 100", "MenuText": "0 0 0", "WindowText": "0 0 0", "TitleText": "0 0 0",
+    "ActiveBorder": "180 180 180", "InactiveBorder": "244 247 252", "AppWorkspace": "171 171 171",
+    "Hilight": "0 120 215", "HilightText": "255 255 255", "ButtonFace": "240 240 240",
+    "ButtonShadow": "160 160 160", "GrayText": "109 109 109", "ButtonText": "0 0 0",
+    "InactiveTitleText": "0 0 0", "ButtonHilight": "255 255 255", "ButtonDkShadow": "105 105 105",
+    "ButtonLight": "227 227 227", "InfoText": "0 0 0", "InfoWindow": "255 255 225",
+    "ButtonAlternateFace": "0 0 0", "HotTrackingColor": "0 102 204", "GradientActiveTitle": "185 209 234",
+    "GradientInactiveTitle": "215 228 242", "MenuHilight": "0 120 215", "MenuBar": "240 240 240",
+}
+
+
+def _triplet(text):
+    try:
+        v = tuple(int(x) for x in str(text).split())
+    except ValueError:
+        return None
+    return v if len(v) == 3 else None
+
+
+def _read_colors(root, path):
+    out = {}
+    try:
+        with winreg.OpenKey(root, path) as k:
+            i = 0
+            while True:
+                try:
+                    name, data, _ = winreg.EnumValue(k, i)
+                except OSError:
+                    break
+                out[name] = data
+                i += 1
+    except OSError:
+        pass
+    return out
+
+
+def is_our_palette(values):
+    """True when {name: "r g b"} is the dark palette dark_syscolors() sets (any accent)."""
+    ours = _dark_colors("#808080")
+    have = {n.lower(): v for n, v in (values or {}).items()}
+    fixed = [n for n in ours if n not in ACCENT_COLORS]
+    hits = sum(1 for n in fixed if _triplet(have.get(n.lower())) == ours[n])
+    return hits >= 0.8 * len(fixed)
+
+
+def our_palette_live():
+    """True while the user's classic colours are our dark palette."""
+    return is_our_palette(_read_colors(HKCU, r"Control Panel\Colors"))
+
+
+def default_colors():
+    """Windows' own classic colours {name: "r g b"}: the default user's (what a new account
+    starts with), or Windows 11's when those are missing or are our dark ones."""
+    out = dict(WINDOWS_COLORS)
+    default_user = _read_colors(winreg.HKEY_USERS, r".DEFAULT\Control Panel\Colors")
+    if not is_our_palette(default_user):
+        out.update({n: v for n, v in default_user.items() if _triplet(v)})
+    return out
+
+
+def default_syscolors():
+    """Windows' own classic colours back in the registry (reload_syscolors() shows them)."""
+    for name, value in default_colors().items():
+        _set(r"Control Panel\Colors", name, value)
+
+
 def reload_syscolors():
     """After Undo restored the Control Panel Colors key, show those colors now."""
     import winreg
@@ -235,3 +307,50 @@ def register_theme(theme_path, style_path=None):
 def restore_current_theme(old):
     if old:
         _set(THEMES_KEY, "CurrentTheme", old)
+
+
+def current_theme():
+    """Windows' "current theme" file now (what register_theme() changes), or None."""
+    try:
+        with winreg.OpenKey(HKCU, THEMES_KEY) as k:
+            return winreg.QueryValueEx(k, "CurrentTheme")[0]
+    except OSError:
+        return None
+
+
+def stock_theme():
+    """Windows' own theme file for the light / dark mode that is set now (dark.theme or
+    aero.theme), for Undo when the old "current theme" was one of ours."""
+    folder = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "Resources", "Themes")
+    try:
+        with winreg.OpenKey(HKCU, r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize") as k:
+            light = winreg.QueryValueEx(k, "SystemUsesLightTheme")[0]
+    except OSError:
+        light = 1
+    for name in ("dark.theme", "aero.theme") if light == 0 else ("aero.theme",):
+        if os.path.exists(os.path.join(folder, name)):
+            return os.path.join(folder, name)
+    return os.path.join(folder, "aero.theme")
+
+
+def stock_wallpaper():
+    """The picture of Windows' own theme (stock_theme()), for Undo when the saved wallpaper
+    was one of ours."""
+    default = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "Web", "Wallpaper", "Windows", "img0.jpg")
+    try:
+        with open(stock_theme(), "rb") as f:
+            data = f.read()
+    except OSError:
+        return default
+    text = data.decode("utf-16", "replace") if data[:2] in (b"\xff\xfe", b"\xfe\xff") \
+        else data.decode("mbcs", "replace")
+    section = None
+    for line in text.splitlines():
+        s = line.strip()
+        if s.startswith("["):
+            section = s.lower()
+        elif section == "[control panel\\desktop]" and s.lower().startswith("wallpaper="):
+            path = os.path.expandvars(s.split("=", 1)[1].strip())
+            if os.path.exists(path):
+                return path
+    return default

@@ -14,15 +14,17 @@ import compileall
 import glob
 import hashlib
 import os
+import re
 import shutil
 import subprocess
 import sys
+import winreg
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 STAGE = os.path.join(HERE, "stage")
 OUT = os.path.join(ROOT, "dist")
-VERSION = "2.3"
+VERSION = "2.4"
 
 APP_FILES = ["xaml_styles.py", "standard_colors.py", "openshell.py", "openshell_skin.py", "alien_icons.py", "armor.py", "assets.py", "cpl_panes.py", "easy_theme_creator.py",
              "folders.py", "launch.pyw", "layout.py", "premium.py", "preview.py", "scifont.py",
@@ -155,44 +157,110 @@ def stage_deps():
         if not os.path.exists(os.path.join(WH_DATA, "ModsSource", mod_id + ".wh.cpp")):
             raise SystemExit("Install the %s mod in Windhawk first (it is copied from there)." % mod_id)
         copy(os.path.join(WH_DATA, "ModsSource", mod_id + ".wh.cpp"), os.path.join(mod, mod_id + ".wh.cpp"))
+    # Each mod's DLL as Windhawk has it registered here (an update can leave the old,
+    # still loaded DLL behind next to it); the name carries the mod's version.
+    dlls = {m: registered_dll(m) for m in MODS}
     for arch in ("32", "64"):
         src = os.path.join(WH_DATA, "Engine", "Mods", arch)
-        files = [f for f in os.listdir(src) if f.startswith(tuple(m + "_" for m in MODS)) or f in
-                 ("libc++.whl", "libunwind.whl", "windhawk-mod-shim.dll")]
+        files = [f for f in os.listdir(src) if f in ("libc++.whl", "libunwind.whl", "windhawk-mod-shim.dll") or any(
+                 f == dlls[m] or (not dlls[m] and f.startswith(m + "_") and f.endswith(".dll")) for m in MODS)]
         for f in files:
             copy(os.path.join(src, f), os.path.join(mod, arch, f))
-    build_our_mod(mod)
+    our_dll = build_our_mod(mod)
+    check_mod_files(mod)
     copy(os.path.join(HERE, "setup-windhawk-mod.ps1"), os.path.join(deps, "setup-windhawk-mod.ps1"))
+    return our_dll
+
+
+def registered_dll(mod_id):
+    """The DLL Windhawk loads for an installed mod (its LibraryFileName), or None."""
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Windhawk\Engine\Mods" + "\\" + mod_id, 0,
+                            winreg.KEY_QUERY_VALUE | winreg.KEY_WOW64_64KEY) as k:
+            return winreg.QueryValueEx(k, "LibraryFileName")[0] or None
+    except OSError:
+        return None
+
+
+def mod_version(path):
+    """The @version in a mod's ==WindhawkMod== header."""
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            if line.startswith("// ==/WindhawkMod=="):
+                break
+            m = re.match(r"//\s*@version\s+(\S+)", line)
+            if m:
+                return m.group(1)
+    raise SystemExit("No @version in " + path)
+
+
+def check_mod_files(mod_dir):
+    """setup-windhawk-mod.ps1 registers the one DLL it finds per mod and takes the mod's
+    version from its name, so: exactly one DLL per mod and architecture it is built for
+    (64-bit always, ours 32-bit too), the same name in both, and that name's version is
+    the one in the mod's source."""
+    for mod_id in MODS + [OUR_MOD]:
+        found = {}
+        for arch in ("32", "64"):
+            folder = os.path.join(mod_dir, arch)
+            names = [f for f in (os.listdir(folder) if os.path.isdir(folder) else [])
+                     if f.startswith(mod_id + "_") and f.lower().endswith(".dll")]
+            if len(names) > 1:
+                raise SystemExit("More than one %s-bit DLL staged for %s: %s" % (arch, mod_id, names))
+            if names:
+                found[arch] = names[0]
+        for arch in (("32", "64") if mod_id == OUR_MOD else ("64",)):
+            if arch not in found:
+                raise SystemExit("No %s-bit DLL staged for %s." % (arch, mod_id))
+        if len(set(found.values())) != 1:
+            raise SystemExit("The %s DLLs have different names: %s" % (mod_id, found))
+        version = mod_version(os.path.join(mod_dir, mod_id + ".wh.cpp"))
+        if not found["64"].startswith("%s_%s_" % (mod_id, version)):
+            raise SystemExit("%s doesn't match its source's @version %s." % (found["64"], version))
 
 
 OUR_MOD = "easy-theme-creator-standard-colors"
-OUR_MOD_VERSION = "1.2"
+OUR_MOD_SRC = os.path.join(HERE, "windhawk-mod", OUR_MOD + ".wh.cpp")
 WH_ROOT = os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "Windhawk")
+MOD_FLAGS = ["-std=c++23", "-DUNICODE", "-D_UNICODE", "-DWINVER=0x0A00", "-D_WIN32_WINNT=0x0A00",
+             "-D_WIN32_IE=0x0A00", "-DNTDDI_VERSION=0x0A000008", "-D__USE_MINGW_ANSI_STDIO=0", "-DWH_MOD",
+             "-include", "windhawk_api.h", "-Wno-pragma-pack", "-Wno-pragma-system-header-outside-header",
+             "-O2", "-shared", "-nostdlib++"]
+MOD_LIBS = ["-luser32", "-lgdi32", "-luxtheme"]
+
+
+def our_mod_dll():
+    """Our mod's DLL name, Windhawk-style <id>_<version>_<build>.dll: the version is the
+    source's @version, the build number comes from the source and the compile flags. So
+    every change gets a new file (setup copies only files that aren't there yet - an old
+    one may be loaded) and setup can tell from the registered name that it must update."""
+    with open(OUR_MOD_SRC, "rb") as f:
+        src = f.read().replace(b"\r\n", b"\n")
+    h = hashlib.sha256(src + "\0".join(MOD_FLAGS + MOD_LIBS).encode()).hexdigest()
+    return "%s_%s_%d.dll" % (OUR_MOD, mod_version(OUR_MOD_SRC), 100000 + int(h[:12], 16) % 900000)
 
 
 def build_our_mod(mod_dir):
-    """Compile our own Windhawk mod (standard colours for chosen apps) for 64- and
-    32-bit programs with Windhawk's bundled clang, the way Windhawk itself does."""
-    src = os.path.join(HERE, "windhawk-mod", OUR_MOD + ".wh.cpp")
+    """Compile our own Windhawk mod (readable text + standard colours for chosen apps) for
+    64- and 32-bit programs with Windhawk's bundled clang, the way Windhawk itself does.
+    Returns the DLL's name."""
     clang = os.path.join(WH_ROOT, "Compiler", "bin", "clang++.exe")
     engine = glob.glob(os.path.join(WH_ROOT, "Engine", "*", "64", "windhawk.dll"))
     if not os.path.exists(clang) or not engine:
         raise SystemExit("Windhawk (with its compiler) must be installed to build the mod.")
     engine_dir = os.path.dirname(os.path.dirname(engine[-1]))
-    copy(src, os.path.join(mod_dir, OUR_MOD + ".wh.cpp"))
+    dll = our_mod_dll()
+    copy(OUR_MOD_SRC, os.path.join(mod_dir, OUR_MOD + ".wh.cpp"))
     for arch, target in (("64", "x86_64-w64-mingw32"), ("32", "i686-w64-mingw32")):
-        out = os.path.join(mod_dir, arch, "%s_%s_1.dll" % (OUR_MOD, OUR_MOD_VERSION))
+        out = os.path.join(mod_dir, arch, dll)
         os.makedirs(os.path.dirname(out), exist_ok=True)
-        cmd = [clang, "-std=c++23", "-target", target, "-DUNICODE", "-D_UNICODE", "-DWINVER=0x0A00",
-               "-D_WIN32_WINNT=0x0A00", "-D_WIN32_IE=0x0A00", "-DNTDDI_VERSION=0x0A000008",
-               "-D__USE_MINGW_ANSI_STDIO=0", "-DWH_MOD", "-include", "windhawk_api.h",
-               "-I", os.path.join(WH_ROOT, "Compiler", "include"), "-Wno-pragma-pack",
-               "-Wno-pragma-system-header-outside-header", "-O2", "-shared", "-nostdlib++", "-o", out,
-               "-x", "c++", src, "-x", "none", os.path.join(engine_dir, arch, "windhawk.dll"),
-               "-luser32", "-lgdi32", "-luxtheme"]
+        cmd = ([clang, "-target", target] + MOD_FLAGS +
+               ["-I", os.path.join(WH_ROOT, "Compiler", "include"), "-o", out, "-x", "c++", OUR_MOD_SRC,
+                "-x", "none", os.path.join(engine_dir, arch, "windhawk.dll")] + MOD_LIBS)
         r = subprocess.run(cmd, capture_output=True, text=True)
         if r.returncode:
             raise SystemExit("Mod compile failed (%s):\n%s" % (arch, r.stderr[-2000:]))
+    return dll
 
 
 def stage_licenses():
@@ -212,7 +280,7 @@ def main():
     print("staging Python...")
     stage_python()
     print("staging SecureUxTheme, Windhawk and the mod...")
-    stage_deps()
+    our_dll = stage_deps()
     stage_licenses()
     iscc = os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "Inno Setup 6", "ISCC.exe")
     if not os.path.exists(iscc):
@@ -224,7 +292,7 @@ def main():
     tmp_out = os.path.join(tempfile.gettempdir(), "etc-installer-out")
     shutil.rmtree(tmp_out, ignore_errors=True)
     r = subprocess.run([iscc, "/Q", "/DStage=" + STAGE, "/DOutDir=" + tmp_out, "/DAppVersion=" + VERSION,
-                        os.path.join(HERE, "setup.iss")])
+                        "/DOurModDll=" + our_dll, os.path.join(HERE, "setup.iss")])
     if r.returncode:
         raise SystemExit("Inno Setup failed (exit %d)." % r.returncode)
     shutil.copyfile(os.path.join(tmp_out, "Easy Theme Creator Setup.exe"),

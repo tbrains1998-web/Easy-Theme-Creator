@@ -2,8 +2,8 @@
 
 Copies this PC's stock aero.msstyles, recolors its ~1,600 images and its color
 table (frames, buttons, scrollbars, menus, Explorer bars, taskbar...), saves it
-under %ProgramData%\\EasyThemeCreator\\skins\\<name>-<time>\\<name>\\ and switches
-Windows to it.
+under %ProgramData%\\EasyThemeCreator\\skins\\<account SID>\\<name>-<time>\\<name>\\
+and switches Windows to it.
 
 Windows only loads a skin it did not sign itself when a theme patcher is
 installed (SecureUxTheme). Where the skin lives matters: copies put in
@@ -14,6 +14,7 @@ import ctypes
 import ctypes.wintypes as wt
 import io
 import os
+import re
 import shutil
 import struct
 import time
@@ -28,6 +29,52 @@ STOCK_STYLE = os.path.join(STOCK, "aero.msstyles")
 # 0x90070003) but loads them from ProgramData or another drive.
 SKINS = os.path.join(os.environ.get("ProgramData", r"C:\ProgramData"), "EasyThemeCreator", "skins")
 PATCHER_DLL = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "SecureUxTheme4.dll")
+
+
+def _user_sid():
+    """This account's SID as text (S-1-5-21-...)."""
+    adv = ctypes.WinDLL("advapi32", use_last_error=True)
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.GetCurrentProcess.restype = wt.HANDLE
+    k32.CloseHandle.argtypes = [wt.HANDLE]
+    k32.LocalFree.argtypes = [ctypes.c_void_p]
+    adv.OpenProcessToken.argtypes = [wt.HANDLE, wt.DWORD, ctypes.POINTER(wt.HANDLE)]
+    adv.GetTokenInformation.argtypes = [wt.HANDLE, ctypes.c_int, ctypes.c_void_p, wt.DWORD,
+                                        ctypes.POINTER(wt.DWORD)]
+    adv.ConvertSidToStringSidW.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p)]
+    token = wt.HANDLE()
+    if not adv.OpenProcessToken(k32.GetCurrentProcess(), 0x0008, ctypes.byref(token)):   # TOKEN_QUERY
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        size = wt.DWORD()
+        adv.GetTokenInformation(token, 1, None, 0, ctypes.byref(size))                  # TokenUser
+        buf = ctypes.create_string_buffer(max(size.value, 1))
+        if not adv.GetTokenInformation(token, 1, buf, size, ctypes.byref(size)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        text = ctypes.c_void_p()
+        if not adv.ConvertSidToStringSidW(ctypes.c_void_p.from_buffer(buf).value, ctypes.byref(text)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            return ctypes.wstring_at(text.value)
+        finally:
+            k32.LocalFree(text)
+    finally:
+        k32.CloseHandle(token)
+
+
+_ACCOUNT = []
+
+
+def user_skins():
+    """This account's own folder in SKINS. The skins folder is shared by every account on
+    the PC (Windows won't load a skin from inside a profile), so each keeps its skins in
+    a folder named after its SID, and cleanup() only ever deletes in its own."""
+    if not _ACCOUNT:
+        try:
+            _ACCOUNT.append(_user_sid())
+        except Exception:
+            _ACCOUNT.append("account-" + re.sub(r"[^\w.-]", "_", os.environ.get("USERNAME", "user")))
+    return os.path.join(SKINS, _ACCOUNT[0])
 
 
 def patcher_installed():
@@ -307,6 +354,55 @@ DARK_CLASSIC = {"edit", "button", "combobox", "listbox", "listview", "treeview",
                 "static", "tooltip", "spin", "progress"}
 DARK_SOURCE = "darkmode_darktheme::"
 
+UNSUPPORTED = "This Windows version's skin format isn't supported"
+
+
+def check_records(table):
+    """Walk the property records exactly the way build() does and raise OSError unless it
+    lands exactly on the end of the table with every size in bounds - so a change in a
+    future Windows' skin format can never be written out as a corrupt skin."""
+    off = 0
+    while off + 32 <= len(table):
+        prop, kind, cls, part, state, inline, _, size = struct.unpack_from("<8i", table, off)
+        # Record types aren't checked: a type a newer Windows adds is harmless as long as
+        # the layout (sizes, alignment, the exact end) still holds.
+        if not inline and (size < 0 or off + 32 + size > len(table)):
+            raise OSError("%s (record size %d at %d)." % (UNSUPPORTED, size, off))
+        off = (off + 32 + (0 if inline else size) + 7) & ~7
+    if off != len(table):
+        raise OSError("%s (records end at %d of %d)." % (UNSUPPORTED, off, len(table)))
+
+
+def _class_names(pe):
+    for t in pe.DIRECTORY_ENTRY_RESOURCE.entries:
+        if str(t.name) == "CMAP":
+            for e in t.directory.entries:
+                for leaf in e.directory.entries:
+                    raw = pe.get_data(leaf.data.struct.OffsetToData, leaf.data.struct.Size)
+                    return [x for x in raw.decode("utf-16le").split("\x00") if x]
+    raise OSError("%s (no class list)." % UNSUPPORTED)
+
+
+_CLASSIC_DARK = []
+
+
+def supports_classic_dark():
+    """True when this PC's stock skin carries Windows' own dark designs of the classic
+    controls (DarkMode_DarkTheme::Edit, ::Button, ... - every class in DARK_CLASSIC), which
+    "Dark classic apps" copies onto them. Older Windows versions don't have them."""
+    if not _CLASSIC_DARK:
+        try:
+            import pefile
+            pe = pefile.PE(STOCK_STYLE)
+            try:
+                names = {n.lower() for n in _class_names(pe)}
+            finally:
+                pe.close()
+            _CLASSIC_DARK.append(all(DARK_SOURCE + c in names for c in DARK_CLASSIC))
+        except Exception:
+            _CLASSIC_DARK.append(False)
+    return _CLASSIC_DARK[0]
+
 
 def _copy_dark_classes(table, names):
     """Copy every property of DarkMode_DarkTheme::X onto X (same part, state and
@@ -343,51 +439,34 @@ def build(name, accent_hex, progress=None, art="color", dark=True, armor=False, 
     art: "color" repaints Windows' own art; "premium" also swaps in our own
     drawn armor-plate caption buttons (see premium.py).
     armor: riveted Explorer bars, red buttons and the emblem panel (see armor.py).
-    classic_dark: classic apps' controls in Windows' own dark designs (see DARK_CLASSIC)."""
+    classic_dark: classic apps' controls in Windows' own dark designs (see DARK_CLASSIC).
+    Everything is worked out in memory first; the skin folder is made at the very end
+    and removed again if writing it fails."""
     import pefile
-    # Windows only finds a skin whose folder has the same name as the file
-    # (Themes\aero\aero.msstyles), so each build gets its own outer folder.
-    folder = os.path.join(SKINS, "%s-%d" % (name, time.time()), name)
-    os.makedirs(os.path.join(folder, "en-US"), exist_ok=True)
-    style = os.path.join(folder, name + ".msstyles")
-    shutil.copyfile(STOCK_STYLE, style)
-    for lang in os.listdir(STOCK):          # language files must be named after the skin
-        mui = os.path.join(STOCK, lang, "aero.msstyles.mui")
-        try:
-            if os.path.isfile(mui):
-                os.makedirs(os.path.join(folder, lang), exist_ok=True)
-                shutil.copyfile(mui, os.path.join(folder, lang, name + ".msstyles.mui"))
-        except OSError:
-            pass                            # a language folder Windows lists but can't open
-    # File by file: some Windows installs list language folders under Shell that can't
-    # be opened (seen on Dutch Windows: Shell\NormalColor\nl-NL), which made copytree fail.
-    for root, dirs, files in os.walk(os.path.join(STOCK, "Shell"), onerror=lambda e: None):
-        rel = os.path.relpath(root, STOCK)
-        for fn in files:
-            try:
-                os.makedirs(os.path.join(folder, rel), exist_ok=True)
-                shutil.copyfile(os.path.join(root, fn), os.path.join(folder, rel, fn))
-            except OSError:
-                pass
-
     pe = pefile.PE(STOCK_STYLE)
+    try:
+        def entries(kind):
+            for t in pe.DIRECTORY_ENTRY_RESOURCE.entries:
+                if str(t.name) == kind:
+                    for e in t.directory.entries:
+                        for leaf in e.directory.entries:
+                            yield e, leaf, pe.get_data(leaf.data.struct.OffsetToData, leaf.data.struct.Size)
 
-    def entries(kind):
-        for t in pe.DIRECTORY_ENTRY_RESOURCE.entries:
-            if str(t.name) == kind:
-                for e in t.directory.entries:
-                    for leaf in e.directory.entries:
-                        yield e, leaf, pe.get_data(leaf.data.struct.OffsetToData, leaf.data.struct.Size)
-
-    e, leaf, raw = next(entries("VARIANT"))
-    variant_id = (str(e.name), leaf.id)
-    table = bytearray(raw)
-    names = [x for x in next(entries("CMAP"))[2].decode("utf-16le").split("\x00") if x]
-    images = [(e.id, leaf.id, d) for e, leaf, d in entries("IMAGE")]
-    streams = {e.id: (leaf.id, d) for e, leaf, d in entries("STREAM")}
-    pe.close()
-    if classic_dark and dark:
-        _copy_dark_classes(table, names)
+        try:
+            e, leaf, raw = next(entries("VARIANT"))
+        except StopIteration:
+            raise OSError("%s (no property table)." % UNSUPPORTED) from None
+        variant_id = (str(e.name), leaf.id)
+        table = bytearray(raw)
+        names = _class_names(pe)
+        images = [(e.id, leaf.id, d) for e, leaf, d in entries("IMAGE")]
+        streams = {e.id: (leaf.id, d) for e, leaf, d in entries("STREAM")}
+    finally:
+        pe.close()
+    check_records(table)                    # before anything is changed or written
+    # Only when Windows' dark designs were really there to copy (older Windows lacks them).
+    classic = classic_dark and dark and _copy_dark_classes(table, names) > 0
+    if classic:
         # The skin's own system-colour table (SysMetrics, props 1601-1631 = COLOR_0..30)
         # is Windows' light palette. Themed checkboxes and radio buttons take their text
         # colour from it (black on the dark pages), so it gets the dark palette Apply sets.
@@ -440,7 +519,7 @@ def build(name, accent_hex, progress=None, art="color", dark=True, armor=False, 
                                                 else painter.text_accent())
             struct.pack_into("<I", table, off + 32, new)
         off = (off + 32 + (0 if inline else size) + 7) & ~7
-    if classic_dark and dark:
+    if classic:
         # Pictures only the plain classic controls use (edit-box backgrounds, list-box
         # borders) are Windows' light designs with no dark twin: dark like light-only art.
         for iid, refs in image_refs.items():
@@ -508,6 +587,68 @@ def build(name, accent_hex, progress=None, art="color", dark=True, armor=False, 
                 if im.size[1] % count == 0:
                     replaced[iid] = png(armor_art.scroll_track(im, count, acc))
 
+    resources = []                              # (type, name, language, data), in writing order
+    for n, (iid, lang, data) in enumerate(images):
+        if iid in replaced:
+            data = replaced[iid]
+        else:
+            try:
+                data = painter.png(data, image_mode.get(iid, "hue"))
+            except Exception:
+                pass                              # keep anything that isn't a PNG
+        resources.append(("IMAGE", iid, lang, data))
+        if progress and n % 100 == 0:
+            progress(n / len(images))
+    resources += [("IMAGE", iid, lang, data) for iid, lang, data in added]
+    if art == "premium" and atlas_id in streams:
+        import premium
+        lang, png = streams[atlas_id]
+        acc = tuple(int(accent_hex.lstrip("#")[i:i + 2], 16) for i in (0, 2, 4))
+        resources.append(("STREAM", atlas_id, lang, premium.paint_atlas(png, atlas_rects, acc)))
+    check_records(table)                        # our own changes kept every record whole
+    resources.append(("VARIANT", variant_id[0], variant_id[1], table))
+
+    # Windows only finds a skin whose folder has the same name as the file
+    # (Themes\aero\aero.msstyles), so each build gets its own, new outer folder.
+    outer = base = os.path.join(user_skins(), "%s-%d" % (name, time.time()))
+    again = 1
+    while os.path.exists(outer):                # never write into (or remove) an existing skin
+        again += 1
+        outer = "%s-%d" % (base, again)
+    os.makedirs(outer)
+    try:
+        return _write_skin(outer, name, resources)
+    except BaseException:
+        shutil.rmtree(outer, ignore_errors=True)    # no half-built skin left behind
+        raise
+
+
+def _write_skin(outer, name, resources):
+    """Copy the stock skin with its language and Shell files to outer\\name\\name.msstyles
+    and write `resources` into it. Returns the .msstyles path."""
+    folder = os.path.join(outer, name)
+    os.makedirs(os.path.join(folder, "en-US"), exist_ok=True)
+    style = os.path.join(folder, name + ".msstyles")
+    shutil.copyfile(STOCK_STYLE, style)
+    for lang in os.listdir(STOCK):          # language files must be named after the skin
+        mui = os.path.join(STOCK, lang, "aero.msstyles.mui")
+        try:
+            if os.path.isfile(mui):
+                os.makedirs(os.path.join(folder, lang), exist_ok=True)
+                shutil.copyfile(mui, os.path.join(folder, lang, name + ".msstyles.mui"))
+        except OSError:
+            pass                            # a language folder Windows lists but can't open
+    # File by file: some Windows installs list language folders under Shell that can't
+    # be opened (seen on Dutch Windows: Shell\NormalColor\nl-NL), which made copytree fail.
+    for root, dirs, files in os.walk(os.path.join(STOCK, "Shell"), onerror=lambda e: None):
+        rel = os.path.relpath(root, STOCK)
+        for fn in files:
+            try:
+                os.makedirs(os.path.join(folder, rel), exist_ok=True)
+                shutil.copyfile(os.path.join(root, fn), os.path.join(folder, rel, fn))
+            except OSError:
+                pass
+
     k32 = ctypes.WinDLL("kernel32", use_last_error=True)
     k32.BeginUpdateResourceW.restype = wt.HANDLE
     k32.BeginUpdateResourceW.argtypes = [wt.LPCWSTR, wt.BOOL]
@@ -525,25 +666,12 @@ def build(name, accent_hex, progress=None, art="color", dark=True, armor=False, 
         if not k32.UpdateResourceW(h, kind, name_arg, lang, buf, len(data)):
             raise OSError("Could not write the skin (%d)." % ctypes.get_last_error())
 
-    for n, (iid, lang, data) in enumerate(images):
-        if iid in replaced:
-            data = replaced[iid]
-        else:
-            try:
-                data = painter.png(data, image_mode.get(iid, "hue"))
-            except Exception:
-                pass                              # keep anything that isn't a PNG
-        put("IMAGE", iid, lang, data)
-    for iid, lang, data in added:
-        put("IMAGE", iid, lang, data)
-        if progress and n % 100 == 0:
-            progress(n / len(images))
-    if art == "premium" and atlas_id in streams:
-        import premium
-        lang, png = streams[atlas_id]
-        acc = tuple(int(accent_hex.lstrip("#")[i:i + 2], 16) for i in (0, 2, 4))
-        put("STREAM", atlas_id, lang, premium.paint_atlas(png, atlas_rects, acc))
-    put("VARIANT", variant_id[0], variant_id[1], table)
+    try:
+        for kind, res_name, lang, data in resources:
+            put(kind, res_name, lang, data)
+    except BaseException:
+        k32.EndUpdateResourceW(h, True)         # discard: frees the handle, file stays untouched
+        raise
     if not k32.EndUpdateResourceW(h, False):
         raise OSError("Could not save the skin.")
     return style
@@ -570,7 +698,11 @@ def fresh_copy(style_path):
     inner = os.path.dirname(style_path)                 # ...\Name-123\Name\Name.msstyles
     outer = os.path.dirname(inner)
     new_outer = "%s-retry%d" % (outer, int(time.time() * 1000) % 100000)
-    shutil.copytree(outer, new_outer)
+    try:
+        shutil.copytree(outer, new_outer)
+    except BaseException:
+        shutil.rmtree(new_outer, ignore_errors=True)   # no half-made copy left behind
+        raise
     return os.path.join(new_outer, os.path.basename(inner), os.path.basename(style_path))
 
 
@@ -578,12 +710,33 @@ def use_stock():
     use(STOCK_STYLE)
 
 
-def cleanup(keep):
-    """Delete old skins except the ones in use (`keep`: list of .msstyles paths)."""
-    if not os.path.isdir(SKINS):
-        return
-    keep = {os.path.normcase(os.path.dirname(os.path.dirname(p))) for p in keep if p}
-    for d in os.listdir(SKINS):
-        full = os.path.join(SKINS, d)
-        if os.path.normcase(full) not in keep:
-            shutil.rmtree(full, ignore_errors=True)
+def _outer(style_path):
+    """...\\Name-123 for ...\\Name-123\\Name\\Name.msstyles (normalised for comparing)."""
+    return os.path.normcase(os.path.abspath(os.path.dirname(os.path.dirname(os.path.expandvars(style_path)))))
+
+
+def cleanup(keep, previous=()):
+    """Delete this account's old skins except the ones in use (`keep`: .msstyles paths).
+    Only this account's own folder (user_skins()) is cleaned: other accounts' skins are
+    never touched. Skins made before the per-account folders lie directly in SKINS, next
+    to every account's folder, so such an old one is only deleted when it is passed in
+    `previous` (.msstyles paths this account used before, e.g. the skin that was on before
+    this Apply) and isn't in `keep`."""
+    keep = {_outer(p) for p in keep if p}
+    mine = user_skins()
+    if os.path.isdir(mine):
+        for d in os.listdir(mine):
+            full = os.path.join(mine, d)
+            if os.path.normcase(os.path.abspath(full)) not in keep:
+                shutil.rmtree(full, ignore_errors=True)
+    root = os.path.normcase(os.path.abspath(SKINS))
+    for p in previous or ():
+        if not p:
+            continue
+        outer = _outer(p)
+        name = os.path.basename(outer)
+        # an old-style skin right in SKINS - never an account's folder, nothing elsewhere
+        if outer in keep or os.path.dirname(outer) != root or re.match(r"(?i)(s-1-|account-)", name):
+            continue
+        if os.path.isdir(outer):
+            shutil.rmtree(outer, ignore_errors=True)

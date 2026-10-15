@@ -10,6 +10,18 @@ function Check($name, $ok, $detail = '') {
     Say(("[{0}] {1}{2}" -f $(if ($ok) { 'OK  ' } else { 'FAIL' }), $name, $(if (-not $ok -and $detail) { "   -- $detail" } else { '' })))
 }
 Say "Started $(Get-Date)"
+Add-Type -Namespace Etc -Name Tok -MemberDefinition @'
+[DllImport("advapi32.dll", SetLastError=true)] public static extern bool OpenProcessToken(IntPtr p, uint access, out IntPtr t);
+[DllImport("advapi32.dll", SetLastError=true)] public static extern bool GetTokenInformation(IntPtr t, int cls, out int info, int len, out int ret);
+[DllImport("kernel32.dll")] public static extern bool CloseHandle(IntPtr h);
+'@
+function Elevated($proc) {         # TokenElevation (20) of a running process; $null if it can't be read
+    $t = [IntPtr]::Zero; $v = 0; $n = 0
+    if (-not [Etc.Tok]::OpenProcessToken($proc.Handle, 8, [ref]$t)) { return $null }
+    $ok = [Etc.Tok]::GetTokenInformation($t, 20, [ref]$v, 4, [ref]$n); [void][Etc.Tok]::CloseHandle($t)
+    if ($ok) { return [bool]$v } else { return $null }
+}
+$shellElevatedBefore = Elevated (Get-Process explorer | Select-Object -First 1)
 $app = "$env:ProgramFiles\Easy Theme Creator"
 $v1Key = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\EasyThemeCreator'
 
@@ -58,13 +70,16 @@ $newVersion = (Get-ItemProperty $sc -ErrorAction SilentlyContinue).Version
 # 2b. upgrade over an install whose own mod is older. Inno remembers the earlier
 # install's tasks, where "Windhawk + mods" was hidden (ready) and so unticked: setup
 # must still update our mod (2.3 first missed it on a real upgrade).
-Set-ItemProperty $sc -Name Version -Value '1.0'
+$newDll = (Get-ItemProperty $sc -ErrorAction SilentlyContinue).LibraryFileName
+Set-ItemProperty $sc -Name Version -Value '1.0'            # as an older release left it
+Set-ItemProperty $sc -Name LibraryFileName -Value 'easy-theme-creator-standard-colors_1.0_1.dll'
 $p = Start-Process 'C:\sbxdist\Easy Theme Creator Setup.exe' -ArgumentList "/SILENT /SUPPRESSMSGBOXES /NORESTART /TASKS=`"desktopicon`" /LOG=`"$res\upgrade.log`"" -PassThru
 $null = $p.Handle
 $p.WaitForExit()
 $after = Get-ItemProperty $sc -ErrorAction SilentlyContinue
 Check 'upgrade without the Windhawk task updates our mod' ($p.ExitCode -eq 0 -and $after.Version -eq $newVersion -and
-    (Test-Path "$env:ProgramData\Windhawk\Engine\Mods\64\$($after.LibraryFileName)")) "exit $($p.ExitCode), version $($after.Version), want $newVersion"
+    $after.LibraryFileName -eq $newDll -and (Test-Path "$env:ProgramData\Windhawk\Engine\Mods\64\$($after.LibraryFileName)")) `
+    "exit $($p.ExitCode), version $($after.Version) / $($after.LibraryFileName), want $newVersion / $newDll"
 Start-Sleep 10   # let Windhawk load its mods into Explorer
 
 # 3. the app itself: Apply, checks, screenshots, Undo
@@ -99,8 +114,14 @@ $wp = (Get-ItemProperty 'HKCU:\Control Panel\Desktop' -ErrorAction SilentlyConti
 Check 'uninstall put the wallpaper back' ($wp -and $wp -notlike '*Test Picture*') $wp
 Check 'uninstall left no Undo snapshot (its Undo worked)' (-not (Test-Path "$env:LOCALAPPDATA\EasyThemeCreator\undo\state.json"))
 Check 'uninstall removed the Start menu skin file' (-not (Test-Path "$env:ProgramFiles\Open-Shell\Skins\Easy Theme Armor.skin7"))
-Check 'uninstall removed ProgramData files' (-not (Test-Path "$env:ProgramData\EasyThemeCreator"))
+Check 'uninstall removed our Windhawk mod (no hooks left in every program)' (-not (Test-Path $sc)) $sc
+Check 'uninstall removed ProgramData files'(-not (Test-Path "$env:ProgramData\EasyThemeCreator"))
 Check 'uninstall removed the shortcuts' (-not (Test-Path "$env:PUBLIC\Desktop\Easy Theme Creator.lnk") -and -not (Test-Path "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\Easy Theme Creator.lnk"))
-Check 'uninstall entry gone' (-not (Get-ItemProperty 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*' -ErrorAction SilentlyContinue | Where-Object DisplayName -eq 'Easy Theme Creator'))
+# the uninstaller runs elevated and its Undo restarts Explorer: the shell must not come back as admin
+$ex = Get-Process explorer -ErrorAction SilentlyContinue | Sort-Object StartTime -Descending | Select-Object -First 1
+$exElevated = if ($ex) { Elevated $ex } else { $null }
+if ($shellElevatedBefore) { Say "(info) this Sandbox's own shell already runs elevated; Explorer elevation after uninstall: $exElevated" } else {
+Check 'Explorer after uninstall runs as the normal user (not elevated)' ($ex -and $exElevated -eq $false) "explorer: $(if ($ex) { $ex.Id } else { 'none' }), elevated: $exElevated" }
+Check 'uninstall entry gone'(-not (Get-ItemProperty 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*' -ErrorAction SilentlyContinue | Where-Object DisplayName -eq 'Easy Theme Creator'))
 foreach ($f in (Get-ChildItem "$env:ProgramData\Windhawk\Logs", "$env:LOCALAPPDATA\Windhawk" -Recurse -Include '*.log','*.txt' -ErrorAction SilentlyContinue)) { Copy-Item $f.FullName "$res\wh-$($f.Name)" -ErrorAction SilentlyContinue }
 Say "Finished $(Get-Date)"

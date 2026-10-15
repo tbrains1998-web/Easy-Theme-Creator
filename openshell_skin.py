@@ -174,43 +174,58 @@ def build(accent, out_path):
     acc = np.array(acc255, float) / 255
     pe = pefile.PE(BASE)
     resources = []
-    for t in pe.DIRECTORY_ENTRY_RESOURCE.entries:
-        tid = str(t.name) if t.name else t.id
-        for e in t.directory.entries:
-            for leaf in e.directory.entries:
-                resources.append((tid, e.id, leaf.id,
-                                  pe.get_data(leaf.data.struct.OffsetToData, leaf.data.struct.Size)))
-    pe.close()
+    try:
+        for t in pe.DIRECTORY_ENTRY_RESOURCE.entries:
+            tid = str(t.name) if t.name else t.id
+            for e in t.directory.entries:
+                for leaf in e.directory.entries:
+                    resources.append((tid, e.id, leaf.id,
+                                      pe.get_data(leaf.data.struct.OffsetToData, leaf.data.struct.Size)))
+    finally:
+        pe.close()
     tmp = out_path + ".tmp"
     shutil.copyfile(BASE, tmp)
-    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    k32.BeginUpdateResourceW.restype = wt.HANDLE
-    k32.BeginUpdateResourceW.argtypes = [wt.LPCWSTR, wt.BOOL]
-    k32.UpdateResourceW.argtypes = [wt.HANDLE, ctypes.c_void_p, ctypes.c_void_p, wt.WORD, ctypes.c_void_p, wt.DWORD]
-    k32.EndUpdateResourceW.argtypes = [wt.HANDLE, wt.BOOL]
-    h = k32.BeginUpdateResourceW(tmp, False)
-    if not h:
-        raise OSError("Could not open the Start menu skin for writing.")
+    try:
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.BeginUpdateResourceW.restype = wt.HANDLE
+        k32.BeginUpdateResourceW.argtypes = [wt.LPCWSTR, wt.BOOL]
+        k32.UpdateResourceW.argtypes = [wt.HANDLE, ctypes.c_void_p, ctypes.c_void_p, wt.WORD, ctypes.c_void_p,
+                                        wt.DWORD]
+        k32.EndUpdateResourceW.argtypes = [wt.HANDLE, wt.BOOL]
+        h = k32.BeginUpdateResourceW(tmp, False)
+        if not h:
+            raise OSError("Could not open the Start menu skin for writing.")
 
-    def put(kind, rid, lang, data):
-        kind_arg = ctypes.c_void_p(kind) if isinstance(kind, int) else ctypes.cast(ctypes.c_wchar_p(kind), ctypes.c_void_p)
-        buf = ctypes.create_string_buffer(bytes(data), len(data))
-        if not k32.UpdateResourceW(h, kind_arg, ctypes.c_void_p(rid), lang, buf, len(data)):
-            raise OSError("Could not write the Start menu skin (%d)." % ctypes.get_last_error())
+        def put(kind, rid, lang, data):
+            kind_arg = ctypes.c_void_p(kind) if isinstance(kind, int) else \
+                ctypes.cast(ctypes.c_wchar_p(kind), ctypes.c_void_p)
+            buf = ctypes.create_string_buffer(bytes(data), len(data))
+            if not k32.UpdateResourceW(h, kind_arg, ctypes.c_void_p(rid), lang, buf, len(data)):
+                raise OSError("Could not write the Start menu skin (%d)." % ctypes.get_last_error())
 
-    for tid, rid, lang, data in resources:
-        if tid == "SKIN":
-            wide = data[1:2] == b"\x00" or data[:2] == b"\xff\xfe"
-            raw = (data.decode("utf-16le") if wide else data.decode("cp1252")).lstrip("\ufeff")
-            text = _script(raw, acc255)          # same encoding as Midnight's own script
-            put("SKIN", rid, lang, (b"\xff\xfe" + text.encode("utf-16le")) if wide else text.encode("cp1252"))
-        elif tid == 2 and _role(rid):
-            a, bpp = _dib_to_rgba(data)
-            if a is not None:
-                put(2, rid, lang, _rgba_to_dib(_paint(a, _role(rid), acc), bpp))
-    if not k32.EndUpdateResourceW(h, False):
-        raise OSError("Could not save the Start menu skin.")
-    os.replace(tmp, out_path)
+        try:
+            for tid, rid, lang, data in resources:
+                if tid == "SKIN":
+                    wide = data[1:2] == b"\x00" or data[:2] == b"\xff\xfe"
+                    raw = (data.decode("utf-16le") if wide else data.decode("cp1252")).lstrip("\ufeff")
+                    text = _script(raw, acc255)          # same encoding as Midnight's own script
+                    put("SKIN", rid, lang, (b"\xff\xfe" + text.encode("utf-16le")) if wide else text.encode("cp1252"))
+                elif tid == 2 and _role(rid):
+                    a, bpp = _dib_to_rgba(data)
+                    if a is not None:
+                        put(2, rid, lang, _rgba_to_dib(_paint(a, _role(rid), acc), bpp))
+        except BaseException:
+            k32.EndUpdateResourceW(h, True)              # discard: frees the handle
+            raise
+        if not k32.EndUpdateResourceW(h, False):
+            raise OSError("Could not save the Start menu skin.")
+        os.replace(tmp, out_path)
+    except BaseException:
+        try:
+            os.remove(tmp)                               # no half-written copy left behind
+        except OSError:
+            pass
+        raise
     return out_path
 
 

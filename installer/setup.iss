@@ -1,8 +1,12 @@
 ; Easy Theme Creator installer. Build with:  python installer\build.py
-; (it stages the files and passes Stage, OutDir and AppVersion to ISCC).
+; (it stages the files and passes Stage, OutDir, AppVersion and OurModDll to ISCC).
 
 #ifndef AppVersion
   #define AppVersion "2.0"
+#endif
+; our Windhawk mod's DLL name, <id>_<version>_<build>.dll (build.py makes it from the mod's source)
+#ifndef OurModDll
+  #error OurModDll is not defined - build with python installer\build.py
 #endif
 
 [Setup]
@@ -61,6 +65,9 @@ Source: "{#Stage}\deps\windhawk-mod\*"; DestDir: "{tmp}\windhawk-mod"; Check: Mo
 Root: HKCU; Subkey: "Software\OpenShell\StartMenu"; ValueType: dword; ValueName: "ShowedStyle2"; ValueData: 1; Tasks: openshell
 ; SecureUxTheme only works after a restart: then the app opens by itself, once, ready to use.
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\RunOnce"; ValueType: string; ValueName: "EasyThemeCreator"; ValueData: """{app}\python\pythonw.exe"" ""{app}\app\launch.pyw"""; Tasks: secureux; Flags: uninsdeletevalue
+; Uninstall removes our own Windhawk mod: Windhawk watches its key and unloads the mod
+; from every program when it goes. (The mods step registers it; setup never creates it.)
+Root: HKLM64; Subkey: "SOFTWARE\Windhawk\Engine\Mods\easy-theme-creator-standard-colors"; Flags: uninsdeletekey dontcreatekey
 
 [Icons]
 Name: "{autoprograms}\Easy Theme Creator"; Filename: "{app}\python\pythonw.exe"; Parameters: """{app}\app\launch.pyw"""; WorkingDir: "{app}\app"; IconFilename: "{app}\app\app.ico"
@@ -70,7 +77,7 @@ Name: "{autodesktop}\Easy Theme Creator"; Filename: "{app}\python\pythonw.exe"; 
 Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -Command ""Enable-ComputerRestore -Drive $env:SystemDrive -EA SilentlyContinue; Checkpoint-Computer -Description 'Before Easy Theme Creator' -RestorePointType MODIFY_SETTINGS -EA SilentlyContinue"""; StatusMsg: "{code:StepStatus|restore}"; Tasks: restorepoint; BeforeInstall: BeginStep('restore'); Flags: 64bit runhidden waituntilterminated
 Filename: "{sys}\msiexec.exe"; Parameters: "/i ""{tmp}\SecureUxTheme_x64.msi"" /qn /norestart"; StatusMsg: "{code:StepStatus|secureux}"; Tasks: secureux; BeforeInstall: BeginStep('secureux'); Flags: 64bit waituntilterminated
 Filename: "{tmp}\windhawk_setup.exe"; Parameters: "/S /STANDARD"; StatusMsg: "{code:StepStatus|windhawk}"; Tasks: windhawk; Check: not WindhawkInstalled; BeforeInstall: BeginStep('windhawk'); Flags: waituntilterminated
-Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{tmp}\setup-windhawk-mod.ps1"" -ModDir ""{tmp}\windhawk-mod"""; StatusMsg: "{code:StepStatus|mods}"; Check: ModsStep; BeforeInstall: BeginStep('mods'); Flags: 64bit runhidden waituntilterminated
+Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{tmp}\setup-windhawk-mod.ps1"" -ModDir ""{tmp}\windhawk-mod""{code:ModsArgs}"; StatusMsg: "{code:StepStatus|mods}"; Check: ModsStep; BeforeInstall: BeginStep('mods'); Flags: 64bit runhidden waituntilterminated
 Filename: "{sys}\msiexec.exe"; Parameters: "/i ""{tmp}\OpenShellSetup64_4_4_198.msi"" ADDLOCAL=StartMenu /qn /norestart"; StatusMsg: "{code:StepStatus|openshell}"; Tasks: openshell; BeforeInstall: BeginStep('openshell'); Flags: 64bit waituntilterminated
 Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -Command ""$s = Join-Path $env:ProgramFiles 'Open-Shell\Skins'; $d = Join-Path $s 'Easy Theme Armor.skin7'; if ((Test-Path (Join-Path $s 'Midnight.skin7')) -and -not (Test-Path $d)) {{ Copy-Item (Join-Path $s 'Midnight.skin7') $d }; if (Test-Path $d) {{ icacls $d /grant '*S-1-5-32-545:M' | Out-Null }"""; StatusMsg: "{code:StepStatus|skin}"; BeforeInstall: BeginStep('skin'); AfterInstall: FinishSteps; Flags: 64bit runhidden waituntilterminated
 Filename: "{app}\python\pythonw.exe"; Parameters: """{app}\app\launch.pyw"""; WorkingDir: "{app}\app"; Description: "Open Easy Theme Creator now"; Flags: postinstall nowait skipifsilent runasoriginaluser
@@ -84,6 +91,11 @@ Type: filesandordirs; Name: "{app}\app\__pycache__"
 Type: filesandordirs; Name: "{commonappdata}\EasyThemeCreator"
 ; our Start menu skin (Open-Shell itself stays installed)
 Type: files; Name: "{commonpf64}\Open-Shell\Skins\Easy Theme Armor.skin7"
+; our Windhawk mod (its registry key is already gone by now, so Windhawk is letting go of
+; the DLLs; one still loaded somewhere stays - usPostUninstall tries those once more)
+Type: files; Name: "{commonappdata}\Windhawk\ModsSource\easy-theme-creator-standard-colors.wh.cpp"
+Type: files; Name: "{commonappdata}\Windhawk\Engine\Mods\32\easy-theme-creator-standard-colors_*.dll"
+Type: files; Name: "{commonappdata}\Windhawk\Engine\Mods\64\easy-theme-creator-standard-colors_*.dll"
 
 [Messages]
 FinishedLabel=Easy Theme Creator is installed.
@@ -93,7 +105,7 @@ FinishedRestartMessage=Easy Theme Creator is installed.%n%nWindows needs to rest
 YesRadio=&Yes, restart now (recommended)
 NoRadio=&No, I will restart later
 ; Inno's own uninstall question (skipped by silent uninstalls - a [Code] MsgBox never is)
-ConfirmUninstall=Uninstalling puts your old Windows look back first (like pressing Undo).%n%nSecureUxTheme, Windhawk and Open-Shell stay installed; remove them in Settings > Apps if you like.%n%nUninstall %1 now?
+ConfirmUninstall=Uninstalling puts your old Windows look back first (like pressing Undo) and removes Easy Theme Creator's own Windhawk mod (readable text).%n%nSecureUxTheme, Windhawk with its other mods and Open-Shell stay installed; remove them in Settings > Apps if you like.%n%nUninstall %1 now?
 
 [Code]
 function SecureUxInstalled: Boolean;
@@ -111,24 +123,42 @@ begin
   Result := FileExists(ExpandConstant('{commonpf64}\Open-Shell\StartMenu.exe'));
 end;
 
-function WindhawkModsReady: Boolean;
+{ Windhawk loads exactly this build of our mod (its DLL name changes with every change
+  to the mod, so an older or different build means: update it). }
+function OurModReady: Boolean;
 var
-  ModVersion: String;
+  Dll: String;
+begin
+  Result := RegQueryStringValue(HKLM64, 'SOFTWARE\Windhawk\Engine\Mods\easy-theme-creator-standard-colors', 'LibraryFileName', Dll) and
+    (CompareText(Dll, '{#OurModDll}') = 0);
+end;
+
+function WindhawkModsReady: Boolean;
 begin
   Result := WindhawkInstalled and
     RegKeyExists(HKLM64, 'SOFTWARE\Windhawk\Engine\Mods\icon-resource-redirect') and
     RegKeyExists(HKLM64, 'SOFTWARE\Windhawk\Engine\Mods\windows-11-taskbar-styler') and
     RegKeyExists(HKLM64, 'SOFTWARE\Windhawk\Engine\Mods\windows-11-file-explorer-styler') and
-    RegQueryStringValue(HKLM64, 'SOFTWARE\Windhawk\Engine\Mods\easy-theme-creator-standard-colors', 'Version', ModVersion) and
-    (ModVersion = '1.2');     { an older version of our mod: run the mods step to update it }
+    OurModReady;
 end;
 
 { The mods step runs when its task is ticked, and also on an upgrade whose own mod is
   outdated: Inno remembers the earlier install's task choices, and there the task was
-  hidden (mods ready), so it stays unticked and the new mod version would never land. }
+  hidden (mods ready), so it stays unticked and the new mod version would never land.
+  (A Windhawk mod the user removed is not a reason to run it: that is their choice.) }
 function ModsStep: Boolean;
 begin
-  Result := WizardIsTaskSelected('windhawk') or (WindhawkInstalled and not WindhawkModsReady);
+  Result := WizardIsTaskSelected('windhawk') or (WindhawkInstalled and not OurModReady);
+end;
+
+{ The mods step's switches: run only for our outdated mod (task not ticked), it updates
+  just that one and leaves the user's own Windhawk mods and their settings alone. }
+function ModsArgs(Param: String): String;
+begin
+  if WizardIsTaskSelected('windhawk') then
+    Result := ''
+  else
+    Result := ' -OnlyOurMod';
 end;
 
 const
@@ -454,9 +484,10 @@ begin
   Result := WizardIsTaskSelected('secureux');
 end;
 
-{ Uninstall: an open Easy Theme Creator keeps its Python files locked (they would be
-  left behind) and could fight the Undo, so it is closed first; at the end anything
-  still running from the app folder is closed and the folder removed completely. }
+{ An open Easy Theme Creator keeps its Python files locked (an update could not replace
+  them, an uninstall would leave them behind) and could fight the Undo, so setup and the
+  uninstaller close it first; at the end of an uninstall anything still running from the
+  app folder is closed and the folder removed completely. }
 procedure CloseAppProcesses;
 var
   rc: Integer;
@@ -464,6 +495,13 @@ begin
   Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
     '-NoProfile -ExecutionPolicy Bypass -Command "Get-Process | Where-Object { $_.Path -like ''' +
     ExpandConstant('{app}') + '\*'' } | Stop-Process -Force"', '', SW_HIDE, ewWaitUntilTerminated, rc);
+end;
+
+{ Right before the files are installed ('' = carry on). }
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+begin
+  CloseAppProcesses;
+  Result := '';
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
@@ -475,6 +513,10 @@ begin
     CloseAppProcesses;
     Sleep(1000);
     DelTree(ExpandConstant('{app}'), True, True, True);
+    { our mod's DLLs that were still loaded during [UninstallDelete] (Windhawk has had a
+      little longer now to unload them); any still in use stay, unregistered and unused }
+    DelTree(ExpandConstant('{commonappdata}\Windhawk\Engine\Mods\64\easy-theme-creator-standard-colors_*.dll'), False, True, False);
+    DelTree(ExpandConstant('{commonappdata}\Windhawk\Engine\Mods\32\easy-theme-creator-standard-colors_*.dll'), False, True, False);
   end;
 end;
 

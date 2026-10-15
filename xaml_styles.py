@@ -125,9 +125,12 @@ def _screen_width():
     """Widest single monitor in real pixels: every monitor's taskbar stretches the
     same picture to its own width."""
     import ctypes.wintypes as wt
-    u = ctypes.windll.user32
+    u = ctypes.WinDLL("user32")                  # own copy: the restype below stays here
+    old = None
     try:
-        u.SetThreadDpiAwarenessContext(ctypes.c_void_p(-4))       # real pixels, not scaled
+        u.SetThreadDpiAwarenessContext.restype = ctypes.c_void_p
+        u.SetThreadDpiAwarenessContext.argtypes = [ctypes.c_void_p]
+        old = u.SetThreadDpiAwarenessContext(ctypes.c_void_p(-4))   # real pixels, not scaled
     except Exception:
         pass
     widths = []
@@ -136,7 +139,11 @@ def _screen_width():
     def cb(hmon, hdc, rect, lp):
         widths.append(rect.contents.right - rect.contents.left)
         return True
-    u.EnumDisplayMonitors(None, None, proc(cb), 0)
+    try:
+        u.EnumDisplayMonitors(None, None, proc(cb), 0)
+    finally:
+        if old:                                  # the rest of Apply runs on this thread too
+            u.SetThreadDpiAwarenessContext(ctypes.c_void_p(old))
     return max(widths + [1920])
 
 
@@ -267,7 +274,8 @@ def explorer_settings(pics):
 
 
 def _write(mod, styles):
-    """Replace the mod's settings with ours (or with nothing, for undo)."""
+    """Replace the mod's settings with ours (or with nothing, for undo). A user's own
+    styles there are kept for Undo by settings_snapshot(), taken before the first Apply."""
     path = MODS_KEY + "\\" + mod + "\\Settings"
     with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, path, 0,
                         winreg.KEY_SET_VALUE | winreg.KEY_QUERY_VALUE) as k:
@@ -298,14 +306,16 @@ def apply(accent, metal=True, orb=True, explorer=True):
     pics = make_pictures(accent)
     for mod, wanted, styles in ((TASKBAR_MOD, metal or orb, lambda: taskbar_settings(pics, metal, orb)),
                                 (EXPLORER_MOD, explorer, lambda: explorer_settings(pics))):
-        if not wanted and not mod_installed(mod):
+        if not wanted:
+            # Switched off: take back only our own styles; styles the user made stay.
+            if ours(mod) and writable(mod):
+                _write(mod, [])
             continue
         why = status(mod)
         if why != "ready":
-            if wanted:
-                problems.append(("Taskbar" if mod == TASKBAR_MOD else "Armor Explorer", why))
+            problems.append(("Taskbar" if mod == TASKBAR_MOD else "Armor Explorer", why))
             continue
-        _write(mod, styles() if wanted else [])
+        _write(mod, styles())
     return problems
 
 
@@ -315,6 +325,76 @@ def ours(mod):
             return winreg.QueryValueEx(k, "styleConstants[0]")[0] == MARK
     except OSError:
         return False
+
+
+# ------------------------------------------------------------------ the user's own styles
+
+STYLER_MODS = (TASKBAR_MOD, EXPLORER_MOD)
+_STYLE_VALUES = ("theme", "controlStyles[", "styleConstants[", "themeResourceVariables[")
+
+
+def _values(k):
+    out, i = [], 0
+    while True:
+        try:
+            out.append(winreg.EnumValue(k, i))          # (name, data, type)
+        except OSError:
+            return out
+        i += 1
+
+
+def _cleared(mod):
+    """True when the mod holds no styles at all (what _write(mod, []) leaves)."""
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, MODS_KEY + "\\" + mod + "\\Settings") as k:
+            return all(data in ("", None) for name, data, _ in _values(k) if name.startswith(_STYLE_VALUES))
+    except OSError:
+        return False
+
+
+def settings_snapshot():
+    """The user's own settings of the styler mods, for Undo: {mod: [[name, type, data], ...]}
+    with every value of the mod's Settings key (binary data as {"hex": ...}, so it can go
+    in the JSON undo state). Mods that already hold our styles, or aren't installed, are
+    left out - so take it once, before the first Apply changes anything."""
+    out = {}
+    for mod in STYLER_MODS:
+        if not mod_installed(mod) or ours(mod):
+            continue
+        try:
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, MODS_KEY + "\\" + mod + "\\Settings") as k:
+                values = _values(k)
+        except OSError:
+            values = []                                  # no settings yet: Undo leaves none
+        out[mod] = [[name, kind, {"hex": data.hex()} if isinstance(data, bytes) else data]
+                    for name, data, kind in values]
+    return out
+
+
+def restore_settings(snapshot):
+    """Undo: write back the settings settings_snapshot() saved, exactly (values we added
+    are removed). Only where our styles - or the empty settings we leave when switched
+    off - are still there, so styles the user made in Windhawk since then are kept."""
+    failed = []
+    for mod, values in (snapshot or {}).items():
+        if mod not in STYLER_MODS or not (ours(mod) or _cleared(mod)) or not writable(mod):
+            continue
+        path = MODS_KEY + "\\" + mod + "\\Settings"
+        try:
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, path, 0,
+                                winreg.KEY_SET_VALUE | winreg.KEY_QUERY_VALUE) as k:
+                saved = {name for name, _, _ in values}
+                for name, _, _ in _values(k):
+                    if name not in saved:
+                        winreg.DeleteValue(k, name)
+                for name, kind, data in values:
+                    if isinstance(data, dict):
+                        data = bytes.fromhex(data.get("hex", ""))
+                    winreg.SetValueEx(k, name, 0, kind, data)
+        except (OSError, TypeError, ValueError) as e:     # one mod failing doesn't stop the other
+            failed.append("%s (%s)" % (mod, e))
+    if failed:
+        raise OSError("Windhawk styles not put back: " + ", ".join(failed))
 
 
 def remove():

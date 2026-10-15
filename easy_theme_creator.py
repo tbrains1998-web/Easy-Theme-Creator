@@ -59,22 +59,27 @@ def restart_explorer(clear_icon_cache=True):
     instead of stale ones (the cache files are rebuilt automatically)."""
     import glob
     hidden = subprocess.CREATE_NO_WINDOW
-    subprocess.run(["taskkill", "/f", "/im", "explorer.exe"], creationflags=hidden,
-                   capture_output=True)
-    if clear_icon_cache:
-        time.sleep(1)
-        cache = os.path.join(os.environ.get("LOCALAPPDATA", ""), "Microsoft", "Windows", "Explorer")
-        for f in glob.glob(os.path.join(cache, "iconcache_*.db")) + \
-                [os.path.join(os.environ.get("LOCALAPPDATA", ""), "IconCache.db")]:
-            try:
-                os.remove(f)
-            except OSError:
-                pass                          # still locked by another process: skip it
     # Started from the Windows folder: Explorer keeps its start folder as long as it runs,
     # and the app's own folder could then never be removed by the uninstaller.
     neutral = os.environ.get("SystemRoot", r"C:\Windows")
-    subprocess.Popen(["explorer.exe"], cwd=neutral)
-    subprocess.Popen(["ie4uinit.exe", "-show"], creationflags=hidden, cwd=neutral)
+    try:
+        subprocess.run(["taskkill", "/f", "/im", "explorer.exe"], creationflags=hidden,
+                       capture_output=True, timeout=30)
+        if clear_icon_cache:
+            time.sleep(1)
+            cache = os.path.join(os.environ.get("LOCALAPPDATA", ""), "Microsoft", "Windows", "Explorer")
+            for f in glob.glob(os.path.join(cache, "iconcache_*.db")) + \
+                    [os.path.join(os.environ.get("LOCALAPPDATA", ""), "IconCache.db")]:
+                try:
+                    os.remove(f)
+                except OSError:
+                    pass                          # still locked by another process: skip it
+    finally:
+        subprocess.Popen(["explorer.exe"], cwd=neutral)       # whatever happened: a shell again
+        try:
+            subprocess.Popen(["ie4uinit.exe", "-show"], creationflags=hidden, cwd=neutral)
+        except OSError:
+            pass
 
 
 def wait_for_taskbar(timeout=20):
@@ -140,6 +145,18 @@ def _rgb(hex_color):
     return theme_core._rgb(hex_color)
 
 
+def log_error():
+    """Note the error being handled (with its traceback) in error.txt next to the undo
+    snapshot - the app runs without a console."""
+    import traceback
+    try:
+        os.makedirs(HOME, exist_ok=True)
+        with open(os.path.join(HOME, "error.txt"), "a", encoding="utf-8") as f:
+            f.write("%s\n%s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), traceback.format_exc()))
+    except OSError:
+        pass
+
+
 class App:
     def __init__(self, root):
         self.root = root
@@ -156,7 +173,9 @@ class App:
         self.look = tk.StringVar(value="Keep")
         self.parts = {}
         self.busy = False
+        self._notes = []                # side remarks for the status line when Apply / Undo end
         self.inbox = queue.Queue()      # background work hands results to the window here
+        root.protocol("WM_DELETE_WINDOW", self.close)
 
         # Fit the screen: the window opens at a size that fits the usable screen area
         # (taskbar excluded, at any display scaling), small screens get a compact layout,
@@ -360,13 +379,32 @@ class App:
     # ------------------------------------------------------------ live preview
 
     def poll(self):
-        """Run what background threads queued (Tk may only be touched from here)."""
+        """Run what background threads queued (Tk may only be touched from here). One that
+        fails is noted in error.txt; the others still run and polling always goes on."""
         try:
             while True:
-                self.inbox.get_nowait()()
-        except queue.Empty:
-            pass
-        self.root.after(50, self.poll)
+                try:
+                    fn = self.inbox.get_nowait()
+                except queue.Empty:
+                    break
+                try:
+                    fn()
+                except Exception:
+                    log_error()
+        finally:
+            try:
+                self.root.after(50, self.poll)
+            except tk.TclError:
+                pass                         # the window is gone
+
+    def close(self):
+        """The window's close button. Apply and Undo run in a background thread that ends
+        with the app, so closing half way would leave Windows half changed: not while busy."""
+        if self.busy:
+            messagebox.showinfo("Easy Theme Creator", "Please wait a moment - Windows is still being "
+                                "changed.\nYou can close the window when it's done.", parent=self.root)
+            return
+        self.root.destroy()
 
     def later(self, fn):
         self.inbox.put(fn)
@@ -490,11 +528,27 @@ class App:
                 box.insert("end", n)
 
         def picked(result):
+            try:
+                if not win.winfo_exists():            # closed while the user was picking
+                    return
+            except tk.TclError:
+                return
             pick_btn.config(state="normal")
             if not result:
                 note.config(text="No window picked.")
                 return
-            exe, title, _ = result
+            exe, title, _pid, path = (tuple(result) + (None,))[:4]    # path: the program's full path
+            skips = getattr(standard_colors, "windhawk_skips", None)
+            try:
+                skipped = bool(path and skips and skips(path))
+            except Exception:
+                skipped = False
+            if skipped:
+                note.config(text="Not added: Windhawk leaves %s alone." % exe)
+                messagebox.showinfo("Fix an app", "Windhawk is set to leave programs in game folders alone, "
+                                    'so "Fix an app" can\'t reach "%s" (%s).\n\nIt was not added to the list.'
+                                    % (title or exe, exe), parent=win)
+                return
             if not messagebox.askyesno("Fix an app", 'Give "%s" (%s) Windows\' standard colours?\n\n'
                                        "It looks normal again the next time it starts." % (title or exe, exe),
                                        parent=win):
@@ -561,32 +615,66 @@ class App:
         if self.picture is None:
             self.status.config(text="👆 Pick a picture first")
             return
+        # Everything the user chose, read once here on the window's thread: Apply runs in
+        # the background, and a colour or switch changed meanwhile must not mix in half way.
+        choice = {"on": {k: v.get() for k, v in self.parts.items()}, "accent": self.accent,
+                  "dark": self.dark.get(), "dark_color": self.dark_color(),
+                  "image_path": self.image_path, "look": self.look.get()}
         self.set_busy(True)
-        threading.Thread(target=self._apply, daemon=True).start()
+        threading.Thread(target=self._apply, args=(choice,), daemon=True).start()
 
-    def _apply(self):
-        on = {k: v.get() for k, v in self.parts.items()}
-        failed = []
-        self.font_changed = False
+    def _apply(self, choice):
+        on, accent, dark = choice["on"], choice["accent"], choice["dark"]
+        acc, dark_color = _rgb(accent), choice["dark_color"]
+        failed, notes = [], []
+        font_changed = False
         skin_later = None
+        loaded = []                                   # skins this Apply switched Windows to
+        state = {}
 
         def load_skin(style):
+            before = skin.current_style()
             skin.use(style)
-            skin.cleanup([style, state.get("skin")])
+            loaded.append(style)
+            # older skins of ours go; `previous` lets the one that was on go too when it
+            # still lies in the pre-2.4 folder layout (never Undo's own target)
+            skin.cleanup([style, state.get("skin")], previous=[before, state.get("stale_skin")])
             # keep Windows' "current theme" on this skin, or Settings puts Aero back
-            old = windows_apply.register_theme(theme["theme"], style)
-            state.setdefault("current_theme_before", old)
+            if "current_theme_before" not in state:
+                now = windows_apply.current_theme()
+                state["current_theme_before"] = None if undo.theme_is_ours(now) else now
+                undo.save(state)
+            windows_apply.register_theme(theme["theme"], style)
+
+        def drop_stray_skins():
+            # a build or load that failed must not leave its 2-5 MB folder behind
+            try:
+                skin.cleanup([skin.current_style(), state.get("skin")] + loaded)
+            except Exception:
+                pass
 
         try:
             self.say("Saving your current look…")
             state = undo.take(skin.current_style(), current_wallpaper(),
                               layout.backup if layout.available() else (lambda p: None))
-            undo.remember(state, shell_icons.registry_keys())   # icon keys Desktop icons / Folders write
-            name = theme_core.safe_name(theme_core.nice_name(self.image_path))
-            accent_rgba = _rgb(self.accent) + (255,)
+            # icon keys Desktop icons / Folders write (Desktop icon settings' own ones too)
+            undo.remember(state, undo.EXPLORER_ICON_KEYS + shell_icons.registry_keys())
+            name = theme_core.safe_name(theme_core.nice_name(choice["image_path"]))
+            accent_rgba = acc + (255,)
+            # "Dark classic apps" needs Windows' own dark designs of the classic controls in
+            # the stock skin; without them the dark palette means light text on light boxes.
+            classic = bool(on.get("syscolors")) and dark
+            if classic and hasattr(skin, "supports_classic_dark"):
+                try:
+                    if not skin.supports_classic_dark():
+                        classic = False
+                        notes.append("(Dark classic apps left out: this Windows has no dark "
+                                     "designs for classic controls.)")
+                except Exception:
+                    pass
 
             self.say("Making the theme…")
-            theme = theme_core.make_theme(name, self.image_path, self.accent, self.dark.get(),
+            theme = theme_core.make_theme(name, choice["image_path"], accent, dark,
                                           THEMES_DIR, pointers=on["pointers"],
                                           icons=on["icons"], sounds=on["sounds"])
             steps = []
@@ -594,7 +682,7 @@ class App:
                 steps.append(("Wallpaper", lambda: windows_apply.wallpaper(theme["wallpaper"])))
             if on["colors"]:
                 # accent only as thin highlights: title bars and taskbar stay black
-                steps.append(("Colors", lambda: windows_apply.colors(self.accent, self.dark.get(), False)))
+                steps.append(("Colors", lambda: windows_apply.colors(accent, dark, False)))
             if theme["pointers"]:
                 steps.append(("Mouse", lambda: windows_apply.pointers(theme["name"], theme["pointers"])))
             if theme["icons"]:
@@ -614,11 +702,11 @@ class App:
             elif on["skin"]:
                 self.say("Painting the windows…")
                 try:
-                    style = skin.build(name.replace(" ", ""), self.accent,
+                    style = skin.build(name.replace(" ", ""), accent,
                                        art="premium" if on["premium"] else "color",
-                                       dark=self.dark.get(),
-                                       armor=bool(on.get("armor")) and self.dark.get(),
-                                       classic_dark=bool(on.get("syscolors")) and self.dark.get())
+                                       dark=dark,
+                                       armor=bool(on.get("armor")) and dark,
+                                       classic_dark=classic)
                     try:
                         load_skin(style)
                     except OSError as e:
@@ -630,31 +718,35 @@ class App:
                         skin_later = style
                 except Exception as e:
                     failed.append(("Windows", str(e)))
+                    drop_stray_skins()
 
             if on["folders"]:
                 self.say("Drawing folder and drive icons…")
                 try:
                     # one fixed folder for every generated icon (theme folders get cleaned up)
                     assets = shell_icons.new_assets_dir()
-                    icons = folders.make_icons(assets, accent_rgba, self.dark_color())
-                    first = state.get("folders") is None
-                    log = folders.apply(icons, os.path.join(undo.SNAP, "folders" if first else "folders-later"))
-                    if first:
-                        state["folders"] = log
+                    icons = folders.make_icons(assets, accent_rgba, dark_color)
+                    # Folders the snapshot doesn't have yet are backed up into it (and the
+                    # snapshot saved) right before they change; the others keep their first
+                    # backup. So Undo covers every folder ever themed, with one backup each.
+                    state["folders"] = state.get("folders") or []
+                    folders.apply(icons, os.path.join(undo.SNAP, "folders"), state["folders"],
+                                  on_backup=lambda: undo.save(state))
                     undo.remember(state, shell_icons.registry_keys())
-                    shell_icons.apply(shell_icons.make(assets, accent_rgba, self.dark_color()), icons)
+                    shell_icons.apply(shell_icons.make(assets, accent_rgba, dark_color), icons)
                     shell_icons.cleanup(assets)
                 except Exception as e:
                     failed.append(("Folders", str(e)))
 
             # Layout first: StartAllBack's ready-made looks reset its taskbar style and Start button.
-            look = self.look.get()
+            look = choice["look"]
             if look != "Keep":
                 self.say("Changing the layout…")
                 try:
-                    layout.set_look(look)
                     state.setdefault("look_before", "Modern")
                     state["layout_changed"] = True
+                    undo.save(state)
+                    layout.set_look(look)
                 except Exception as e:
                     failed.append(("Layout", str(e)))
             # Taskbar, Start button and Explorer bars: Windhawk's free XAML stylers read
@@ -663,18 +755,24 @@ class App:
                     or xaml_styles.ours(xaml_styles.EXPLORER_MOD):
                 self.say("Dressing the taskbar and Explorer…")
                 try:
+                    # The user's own styler settings, once, before our first styles replace them.
+                    if "xaml_before" not in state and hasattr(xaml_styles, "settings_snapshot"):
+                        state["xaml_before"] = xaml_styles.settings_snapshot()
+                    state["xaml"] = True
+                    undo.save(state)
                     mods = [m for m in (xaml_styles.TASKBAR_MOD, xaml_styles.EXPLORER_MOD)
                             if xaml_styles.mod_installed(m) and not xaml_styles.writable(m)]
                     if mods:
                         self.say("Windows will ask once for permission to change Windhawk's styles…")
                         xaml_styles.setup_access(self.hwnd)
-                    failed += xaml_styles.apply(_rgb(self.accent), metal=on.get("taskbar"), orb=on.get("orb"),
-                                                explorer=bool(on.get("armor")) and self.dark.get())
-                    state["xaml"] = True
+                    failed += xaml_styles.apply(acc, metal=on.get("taskbar"), orb=on.get("orb"),
+                                                explorer=bool(on.get("armor")) and dark)
                     if on.get("taskbar"):
-                        old = xaml_styles.left_align()              # Windows 7: icons on the left
-                        state.setdefault("taskbar_align_before", old)
+                        if "taskbar_align_before" not in state:
+                            state["taskbar_align_before"] = _reg_value(xaml_styles.ADVANCED, "TaskbarAl")
                         state["taskbar_aligned"] = True
+                        undo.save(state)
+                        xaml_styles.left_align()              # Windows 7: icons on the left
                 except Exception as e:
                     failed.append(("Taskbar", str(e)))
             if on.get("font"):
@@ -682,54 +780,85 @@ class App:
                 try:
                     if "fonts_before" not in state and not scifont.in_use():
                         state["fonts_before"] = scifont.current()
+                        undo.save(state)
                     scifont.apply()
-                    self.font_changed = True
+                    font_changed = True
                 except Exception as e:
                     failed.append(("Sci-fi font", str(e)))
             elif state.get("fonts_before") and scifont.in_use():
-                scifont.restore(state.pop("fonts_before"))
+                try:
+                    scifont.restore(state["fonts_before"])
+                    del state["fonts_before"]
+                    undo.save(state)
+                except Exception as e:
+                    failed.append(("Sci-fi font", str(e)))
             # Control Panel's side panes are pictures inside shell32, not part of the skin;
             # Windhawk's Resource Redirect swaps them when Explorer restarts below.
             # With Armor Explorer the same swap also serves Explorer's folder layouts with
             # Windows' details pane along the bottom (Windows 7 style), where the skin's
             # emblem panel is painted.
-            bottom = bool(on.get("armor")) and self.dark.get()
-            if (on.get("syscolors") and self.dark.get()) or bottom:
-                try:
-                    cpl_panes.apply(details_bottom=bottom)
+            bottom = bool(on.get("armor")) and dark
+            try:
+                if (on.get("syscolors") and dark) or bottom:
                     state["cpl_panes"] = True
+                    undo.save(state)
+                    cpl_panes.apply(details_bottom=bottom)
                     if bottom:                         # the panel shows with "Details pane" on
                         undo.remember(state, [cpl_panes.DETAILS_KEY_FULL])
                         cpl_panes.show_details_pane()
+                else:
+                    cpl_panes.undo()
+            except Exception as e:
+                failed.append(("Control Panel side pane", str(e)))
+            # Windows 7 Start menu (Open-Shell, armor skin): it keeps settings in memory and
+            # writes them back when it exits, so it is stopped first and started again with
+            # the new Explorer - always, also when a step in between goes wrong.
+            shell_stopped = openshell.available()
+            if shell_stopped:
+                try:
+                    openshell.stop()
                 except Exception as e:
-                    failed.append(("Control Panel side pane", str(e)))
-            else:
-                cpl_panes.undo()
-            # Windows 7 Start menu (Open-Shell, armor skin): it keeps settings in memory,
-            # so it is stopped now and started again with the new Explorer.
-            # Open-Shell writes its own settings back when it exits, so it is stopped first.
-            if openshell.available():
-                openshell.stop()
-                if on.get("startmenu"):
+                    failed.append(("Start menu", str(e)))
+            try:
+                if shell_stopped and on.get("startmenu"):
                     self.say("Dressing the Start menu…")
                     try:
-                        before = openshell.apply(_rgb(self.accent), self.hwnd)
-                        state.setdefault("openshell_before", before)
+                        snapshot = getattr(openshell, "_settings_snapshot", None)
+                        if "openshell_before" not in state and snapshot:
+                            state["openshell_before"] = undo.clean_openshell(snapshot())
+                            undo.save(state)
+                        before = openshell.apply(acc, self.hwnd)
+                        state.setdefault("openshell_before", undo.clean_openshell(before))
                     except Exception as e:
                         failed.append(("Start menu", str(e)))
-            undo.save(state)
-            self.say("Refreshing the screen…")
-            restart_explorer()
-            wait_for_taskbar()
-            if openshell.available():
-                openshell.start()
+                undo.save(state)
+                self.say("Refreshing the screen…")
+                restart_explorer()
+                wait_for_taskbar()
+            finally:
+                if shell_stopped:
+                    try:
+                        openshell.start()
+                    except Exception as e:
+                        failed.append(("Start menu", str(e)))
 
             if on["colors"]:
-                windows_apply.keep_bars_black()     # accent only as thin highlights
-            if on.get("syscolors") and self.dark.get():
+                try:
+                    windows_apply.keep_bars_black()     # accent only as thin highlights
+                except Exception as e:
+                    failed.append(("Colors", str(e)))
+            if classic:
                 try:
                     undo.remember(state, [r"HKCU\Control Panel\Colors"])
-                    windows_apply.dark_syscolors(self.accent)
+                    windows_apply.dark_syscolors(accent)
+                except Exception as e:
+                    failed.append(("Classic apps", str(e)))
+            else:
+                # Dark classic colours left from an earlier Apply would stay with this look
+                # (and the readable-text mod draws dialog text in them: light on light).
+                try:
+                    if windows_apply.our_palette_live():
+                        failed += undo.restore_colors(state)
                 except Exception as e:
                     failed.append(("Classic apps", str(e)))
 
@@ -740,15 +869,17 @@ class App:
                     undo.save(state)
                 except Exception as e:
                     failed.append(("Windows", str(e)))
+                    drop_stray_skins()
 
             self.say("Checking the result…")
             time.sleep(2)
-            failed += verify(on, _rgb(self.accent))
+            failed += verify(on, acc)
         except Exception as e:
             failed.append(("Theme", str(e)))
         done = "✔ Done! Your new theme is on."
-        if self.font_changed:
+        if font_changed:
             done += " Sign out and back in to see the new font everywhere."
+        self._notes = notes
         self.later(lambda: self._done(failed, done))
 
     def undo_now(self):
@@ -758,35 +889,58 @@ class App:
         threading.Thread(target=self._undo, daemon=True).start()
 
     def _undo(self):
-        failed = []
+        # Every step runs on its own, so one that fails doesn't keep the rest (or Explorer's
+        # restart) from happening; the snapshot stays until a run without any problem.
+        # Nothing of ours ever comes back from the snapshot (undo.is_ours): Windows' own
+        # skin, icons, sounds, pointers and colours take the place of such values.
+        failed, notes = [], []
         try:
             state = undo.load()
             self.say("Putting your old look back…")
-            undo.restore_registry(state)
+            failed += undo.restore_registry(state)
             try:
+                # icon keys this snapshot doesn't cover (older ones): our icons out, Windows' back
+                undo.heal_live(undo.ICON_KEYS + shell_icons.registry_keys())
+            except Exception as e:
+                failed.append(("Icons", str(e)))
+            try:
+                if windows_apply.our_palette_live():   # dark colours the snapshot never saved
+                    windows_apply.default_syscolors()
                 windows_apply.colors_reload()
                 windows_apply.reload_syscolors()
-            except Exception:
-                pass
+            except Exception as e:
+                failed.append(("Classic apps", str(e)))
             # The original picture if it is still there; otherwise the snapshot's copy, moved
             # out of the snapshot folder first (that folder is deleted after a good Undo).
             # "" = there was no picture (a plain colour). The old Fill / Fit / Tile comes back too.
-            wp, copy = state.get("wallpaper"), state.get("wallpaper_copy")
-            style, tile = state.get("wallpaper_style") or (None, None)
-            if not (wp and os.path.exists(wp)) and copy and os.path.exists(copy):
-                wp = os.path.join(HOME, "restored-wallpaper" + os.path.splitext(copy)[1])
-                shutil.copyfile(copy, wp)
-            if wp == "" or (wp and os.path.exists(wp)):
-                try:
+            # (One of ours was replaced by Windows' own picture when the snapshot was read.)
+            try:
+                wp, copy = state.get("wallpaper"), state.get("wallpaper_copy")
+                style, tile = state.get("wallpaper_style") or (None, None)
+                if not (wp and os.path.exists(wp)) and copy and os.path.exists(copy):
+                    wp = os.path.join(HOME, "restored-wallpaper" + os.path.splitext(copy)[1])
+                    shutil.copyfile(copy, wp)
+                if wp == "" or (wp and os.path.exists(wp)):
                     windows_apply.wallpaper(wp, style or "10", tile or "0")
-                except Exception as e:
-                    failed.append(("Wallpaper", str(e)))
+            except Exception as e:
+                failed.append(("Wallpaper", str(e)))
             ctypes.windll.user32.SystemParametersInfoW(0x57, 0, None, 3)   # reload pointers
-            if state.get("current_theme_before"):
-                windows_apply.restore_current_theme(state["current_theme_before"])
+            try:
+                # Windows' "current theme" (Settings re-applies it): the old one, or Windows'
+                # own when that was ours or is gone, so our skin can't come back from there.
+                before = state.get("current_theme_before")
+                if "current_theme_before" in state or undo.theme_is_ours(windows_apply.current_theme()):
+                    if not (before and os.path.exists(os.path.expandvars(before))):
+                        before = windows_apply.stock_theme()
+                    windows_apply.restore_current_theme(before)
+            except Exception as e:
+                failed.append(("Windows", str(e)))
             try:
                 old = state.get("skin")
-                skin.use(old if old and os.path.exists(old) else skin.STOCK_STYLE)
+                if old and os.path.exists(old) and not undo.is_ours(old):
+                    skin.use(old)
+                else:
+                    skin.use_stock()                   # Windows' own aero
             except Exception as e:
                 failed.append(("Windows", str(e)))
             if state.get("folders"):
@@ -795,11 +949,16 @@ class App:
                 except Exception as e:
                     failed.append(("Folders", str(e)))
             if state.get("layout_changed") or state.get("startallback_changed"):
-                try:
-                    layout.restore(state.get("startallback"),
-                                   state.get("look_before") if state.get("layout_changed") else None)
-                except Exception as e:
-                    failed.append(("Layout", str(e)))
+                # StartAllBack era (1.x): its layout only comes back while StartAllBack is
+                # installed. It is gone on most PCs now, which must not stop Undo for good.
+                if not layout.available():
+                    notes.append("(StartAllBack is gone, so its old layout was skipped.)")
+                else:
+                    try:
+                        layout.restore(state.get("startallback"),
+                                       state.get("look_before") if state.get("layout_changed") else None)
+                    except Exception as e:
+                        notes.append("(StartAllBack's old layout was skipped: %s)" % e)
             try:
                 cpl_panes.undo()
             except Exception as e:
@@ -808,7 +967,17 @@ class App:
                 try:
                     if state.get("taskbar_aligned"):
                         xaml_styles.restore_align(state.get("taskbar_align_before"))
-                    xaml_styles.remove()
+                except Exception as e:
+                    failed.append(("Taskbar", str(e)))
+                try:
+                    # the user's own styler settings from before Apply, where there were any
+                    saved = state.get("xaml_before")
+                    if saved and hasattr(xaml_styles, "restore_settings"):
+                        xaml_styles.restore_settings(saved)
+                except Exception as e:
+                    failed.append(("Taskbar", str(e)))
+                try:
+                    xaml_styles.remove()                # whatever of ours is still there
                 except Exception as e:
                     failed.append(("Taskbar", str(e)))
             if state.get("armor_explorer"):
@@ -821,38 +990,47 @@ class App:
                     scifont.restore(state["fonts_before"])
                 except Exception as e:
                     failed.append(("Sci-fi font", str(e)))
-            try:
-                standard_colors.clear()               # no theme, nothing to fix
-            except Exception as e:
-                failed.append(("Fixed apps", str(e)))
-            if openshell.available():
-                openshell.stop()                       # it saves its settings on exit
-            restart_explorer()
-            # Only now, with Explorer (and the Open-Shell code inside it) gone, nothing can
-            # write Open-Shell's in-memory settings back over the old ones.
-            if "openshell_before" in state:
+            # The "Fix an app" list stays: it is the user's own list, not part of the theme.
+            shell_stopped = openshell.available()
+            if shell_stopped:
                 try:
-                    openshell.restore(state["openshell_before"])
+                    openshell.stop()                   # it saves its settings on exit
                 except Exception as e:
                     failed.append(("Start menu", str(e)))
-            if openshell.available():
-                wait_for_taskbar()
-                openshell.start()
+            try:
+                restart_explorer()
+                # Only now, with Explorer (and the Open-Shell code inside it) gone, nothing can
+                # write Open-Shell's in-memory settings back over the old ones.
+                if "openshell_before" in state:
+                    try:
+                        openshell.restore(state["openshell_before"])
+                    except Exception as e:
+                        failed.append(("Start menu", str(e)))
+            finally:
+                if shell_stopped:                      # the Start menu comes back whatever happened
+                    try:
+                        wait_for_taskbar()
+                        openshell.start()
+                    except Exception as e:
+                        failed.append(("Start menu", str(e)))
             if not failed:
                 undo.forget()
         except Exception as e:
             failed.append(("Undo", str(e)))
+        self._notes = notes
         self.later(lambda: self._done(failed, "↩ Your old look is back."))
 
     def _done(self, failed, ok_text):
+        notes, self._notes = self._notes, []
+        extra = (" " + " ".join(notes)) if notes else ""
         self.set_busy(False)
         self.update_undo()
         if failed:
-            self.status.config(text="⚠ Some parts didn't change")
+            self.status.config(text="⚠ Some parts didn't change" + extra)
             messagebox.showwarning("Easy Theme Creator",
                                    "\n".join("• %s: %s" % f for f in failed))
         else:
-            self.status.config(text=ok_text)
+            self.status.config(text=ok_text + extra)
 
 
 def undo_silently():
@@ -888,6 +1066,7 @@ def forget_open_after_restart():
 
 if __name__ == "__main__":
     forget_open_after_restart()
+    undo.drop_leftovers()                      # 2.3 and older: backups nothing ever read
     if "--undo" in sys.argv:
         sys.exit(undo_silently())
     root = tk.Tk()

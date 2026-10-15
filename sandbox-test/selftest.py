@@ -7,6 +7,7 @@ PNG screenshots to the results folder given as the first argument.
 import ctypes
 import glob
 import ctypes.wintypes as wt
+import json
 import os
 import runpy
 import subprocess
@@ -240,10 +241,26 @@ def body():
     # ---------------------------------------------------------- readable dialog text (same mod)
     # Tab-page labels (folder Properties...) get the system text colour instead of black.
     probe_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dialog_text_probe.py")
-    got = subprocess.run([py, probe_file], capture_output=True, text=True, timeout=90).stdout.split()
-    say("Properties page label colour / system text colour / texture:", got)
-    check("Properties labels get the theme's text colour", len(got) == 4 and got[2] == "1" and got[0] == got[1], got)
-    check("checkbox text gets the theme's text colour (not black)", len(got) == 4 and got[3] == got[1], got)
+    out = subprocess.run([py, probe_file], capture_output=True, text=True, timeout=90).stdout.strip()
+    say("Properties text probe:", out)
+
+    def contrast(a, b):                              # WCAG contrast ratio of two #rrggbb colours
+        def lum(c):
+            v = [int(c[i:i + 2], 16) / 255 for i in (1, 3, 5)]
+            v = [x / 12.92 if x <= 0.04045 else ((x + 0.055) / 1.055) ** 2.4 for x in v]
+            return 0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2]
+        hi, lo = sorted((lum(a), lum(b)), reverse=True)
+        return (hi + 0.05) / (lo + 0.05)
+    try:
+        got = json.loads(out)
+    except ValueError:
+        got = {}
+    check("Properties labels readable on their page", got.get("texture") and got.get("page") and
+          contrast(got["label"], got["page"]) >= 4.5, got)
+    check("checkbox text readable on a dark surface", got.get("checkbox_on_dark") and
+          contrast(got["checkbox_on_dark"], "#202024") >= 4.5, got)
+    check("checkbox text readable on a white surface (no light-on-light)", got.get("checkbox_on_white") and
+          contrast(got["checkbox_on_white"], "#ffffff") >= 4.5, got)
     mods = subprocess.run(["tasklist", "/m", "easy-theme-creator-standard-colors_*", "/fi", "imagename eq explorer.exe"],
                           capture_output=True, text=True).stdout
     check("readable-text mod loaded in Explorer", "explorer.exe" in mods.lower(), mods.strip()[-200:])
@@ -324,6 +341,63 @@ def body():
     check("Undo removed taskbar styles", restored["tb_mark"] != "// Easy Theme Creator", restored["tb_mark"])
     check("Undo removed explorer styles", restored["ex_mark"] != "// Easy Theme Creator", restored["ex_mark"])
     shot("5-after-undo", wait=6)
+
+    # ---------------------------------------------------------- Apply twice, then dark off
+    import undo
+
+    def dirty(v):                                    # points at something Easy Theme Creator made
+        return isinstance(v, str) and ("easythemecreator" in v.lower() or "\\parts-" in v.lower())
+
+    def light(rgb_text):                             # "r g b" as Control Panel\Colors keeps it
+        try:
+            return sum(int(x) for x in str(rgb_text).split()) > 600
+        except ValueError:
+            return False
+    problems.clear()
+    press(lambda: on_main(app.apply_now))
+    press(lambda: on_main(app.apply_now))            # a second Apply on top of the first
+    check("no folders-later backups after Apply on Apply (2.3 piled up GBs there)",
+          not os.path.exists(os.path.join(undo.SNAP, "folders-later")))
+    dini = os.path.join(os.environ["USERPROFILE"], "Desktop", "desktop.ini")
+    check("desktop.ini still small after Apply on Apply", not os.path.exists(dini) or os.path.getsize(dini) < 4096,
+          os.path.getsize(dini) if os.path.exists(dini) else None)
+    on_main(lambda: app.dark.set(False))
+    problems.clear()
+    took = press(lambda: on_main(app.apply_now))
+    check("Apply with Dark off finished", took is not None, problems)
+    check("Dark off brings the light classic colours back (no light-on-light text)",
+          light(reg(HKCU, r"Control Panel\Colors", "Window")), reg(HKCU, r"Control Panel\Colors", "Window"))
+    on_main(lambda: app.dark.set(True))
+
+    # ---------------------------------------------------------- Undo from a themed snapshot
+    # What happened on a real PC: the snapshot was lost while a theme was on, so the next
+    # Apply recorded the themed look as "before". Undo must still give Windows' own look.
+    took = press(lambda: on_main(app.undo_now))
+    undo.forget()
+    problems.clear()
+    press(lambda: on_main(app.apply_now))            # first Apply: snapshot of plain Windows
+    undo.forget()                                    # ...lost while the theme is on
+    press(lambda: on_main(app.apply_now))            # this snapshot holds our own theme
+    problems.clear()
+    took = press(lambda: on_main(app.undo_now))
+    check("Undo from a themed snapshot finished without problems", took is not None and not problems, problems)
+    bin_icon = reg(HKCU, r"Software\Classes\CLSID\{645FF040-5081-101B-9F08-00AA002F954E}\DefaultIcon", "")
+    pc_icon = reg(HKCU, r"Software\Classes\CLSID\{20D04FE0-3AEA-1069-A2D8-08002B30309D}\DefaultIcon", "")
+    arrow = reg(HKCU, r"Control Panel\Cursors", "Arrow")
+    window = reg(HKCU, r"Control Panel\Colors", "Window")
+    ini_text = ""
+    if os.path.exists(dini):
+        raw = open(dini, "rb").read()
+        ini_text = raw.decode("utf-16", "replace") if raw[:2] == b"\xff\xfe" else raw.decode("mbcs", "replace")
+    current = reg(HKCU, r"Software\Microsoft\Windows\CurrentVersion\Themes", "CurrentTheme")
+    say("after Undo from a themed snapshot:", {"bin": bin_icon, "pc": pc_icon, "arrow": arrow, "window": window,
+                                              "desktop.ini": ini_text.strip(), "current theme": current})
+    check("themed-snapshot Undo: Recycle Bin and This PC icons are Windows' own",
+          not dirty(bin_icon) and not dirty(pc_icon), (bin_icon, pc_icon))
+    check("themed-snapshot Undo: mouse pointers are Windows' own", not dirty(arrow), arrow)
+    check("themed-snapshot Undo: classic colours are light again", light(window), window)
+    check("themed-snapshot Undo: no folder icons of ours left", "easythemecreator" not in ini_text.lower(), ini_text)
+    check("themed-snapshot Undo: Windows' current theme isn't ours", not undo.theme_is_ours(current), current)
 
     # ---------------------------------------------------------- left on for the uninstaller
     # Friends usually uninstall with the theme still on: Apply again and leave it, so the
