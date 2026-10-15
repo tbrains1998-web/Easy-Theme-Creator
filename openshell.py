@@ -81,8 +81,11 @@ def _write_settings():
 
 
 def _running():
-    out = subprocess.run(["tasklist", "/FI", "IMAGENAME eq StartMenu.exe", "/NH"], capture_output=True,
-                         text=True, creationflags=HIDDEN).stdout
+    try:
+        out = subprocess.run(["tasklist", "/FI", "IMAGENAME eq StartMenu.exe", "/NH"], capture_output=True,
+                             text=True, creationflags=HIDDEN, timeout=15).stdout
+    except subprocess.TimeoutExpired:
+        return True                 # can't tell: assume it is still there
     return "startmenu.exe" in out.lower()
 
 
@@ -91,11 +94,23 @@ def stop():
     `-exit` only asks the running copy to quit, and it writes its own settings back
     as it goes - so wait until it is really gone before anyone writes settings."""
     if os.path.exists(EXE):
-        subprocess.run([EXE, "-exit"], creationflags=HIDDEN, timeout=20)
+        try:
+            subprocess.run([EXE, "-exit"], creationflags=HIDDEN, timeout=20)
+        except subprocess.TimeoutExpired:
+            pass                    # a hung copy (seen while Explorer was swamped): killed below
         for _ in range(40):
             if not _running():
                 break
             time.sleep(0.25)
+        else:
+            # Still there: end it. Its unsaved in-memory settings are lost, which is fine -
+            # Apply and Undo write the settings themselves right after this.
+            subprocess.run(["taskkill", "/F", "/IM", "StartMenu.exe"], capture_output=True,
+                           creationflags=HIDDEN, timeout=30)
+            for _ in range(20):
+                if not _running():
+                    break
+                time.sleep(0.25)
         time.sleep(1.0)
 
 

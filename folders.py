@@ -62,26 +62,52 @@ def _attrs(path, value):
     ctypes.windll.kernel32.SetFileAttributesW(path, value)
 
 
+def _read_lines(path):
+    """The non-blank lines of a desktop.ini. Up to 2.1 every Apply doubled the file
+    (text-mode writing turned each \\r\\n into \\r\\r\\n, read back as an extra blank
+    line), up to gigabytes that kept Explorer busy for good: those are read in pieces."""
+    with open(path, "rb") as f:
+        head = f.read(2)
+        if head not in (b"\xff\xfe", b"\xfe\xff"):
+            text = (head + f.read()).decode("mbcs", "replace")
+            return [ln for ln in text.splitlines() if ln.strip()]
+        enc = "utf-16-le" if head == b"\xff\xfe" else "utf-16-be"
+        lines, carry = [], ""
+        while True:
+            chunk = f.read(16 << 20)                         # even size: whole UTF-16 units
+            if not chunk:
+                break
+            parts = (carry + chunk.decode(enc, "replace")).replace("\r", "\n").split("\n")
+            carry = parts.pop()
+            lines += [p for p in parts if p.strip()]
+        return lines + ([carry] if carry.strip() else [])
+
+
+def _put_lines(path, lines):
+    with open(path, "w", encoding="utf-16", newline="") as f:   # newline="": no \r\r\n
+        f.write("\r\n".join(lines) + "\r\n")
+
+
 def _write_ini(folder, icon, backup_dir, log):
     ini = os.path.join(folder, "desktop.ini")
     saved = None
-    if os.path.exists(ini):
-        saved = os.path.join(backup_dir, uuid.uuid4().hex + ".ini")
-        shutil.copyfile(ini, saved)
-    log.append((folder, saved))
     lines = []
     if os.path.exists(ini):
         _attrs(ini, 0x80)
-        raw = open(ini, "rb").read()
-        text = raw.decode("utf-16") if raw[:2] in (b"\xff\xfe", b"\xfe\xff") else raw.decode("mbcs", "replace")
-        lines = [ln for ln in text.splitlines()
+        lines = _read_lines(ini)
+        saved = os.path.join(backup_dir, uuid.uuid4().hex + ".ini")
+        if os.path.getsize(ini) < 65536:
+            shutil.copyfile(ini, saved)
+        else:
+            _put_lines(saved, lines)                         # a doubled one: back up its lines
+        lines = [ln for ln in lines
                  if not ln.strip().lower().startswith(("iconresource=", "iconfile=", "iconindex="))]
+    log.append((folder, saved))
     if not any(ln.strip().lower() == "[.shellclassinfo]" for ln in lines):
         lines = ["[.ShellClassInfo]"] + lines
     i = next(n for n, ln in enumerate(lines) if ln.strip().lower() == "[.shellclassinfo]")
     lines.insert(i + 1, "IconResource=%s,0" % icon)
-    with open(ini, "w", encoding="utf-16") as f:
-        f.write("\r\n".join(lines) + "\r\n")
+    _put_lines(ini, lines)
     _attrs(ini, 0x2 | 0x4)                                   # hidden + system
     attrs = ctypes.windll.kernel32.GetFileAttributesW(folder)
     _attrs(folder, attrs | 0x1)                              # read-only flag makes Explorer read it
@@ -104,7 +130,10 @@ def undo(log):
         if os.path.exists(ini):
             _attrs(ini, 0x80)
         if saved and os.path.exists(saved):
-            shutil.copyfile(saved, ini)
+            if os.path.getsize(saved) < 65536:
+                shutil.copyfile(saved, ini)
+            else:
+                _put_lines(ini, _read_lines(saved))         # a doubled backup from 2.1 or older
             _attrs(ini, 0x2 | 0x4)
         elif os.path.exists(ini):
             os.remove(ini)

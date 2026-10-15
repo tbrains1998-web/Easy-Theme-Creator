@@ -79,7 +79,10 @@ def state():
 def shot(name, wait=0):
     from PIL import ImageGrab
     time.sleep(wait)
-    ImageGrab.grab(all_screens=True).save(os.path.join(RES, name + ".png"))
+    try:
+        ImageGrab.grab(all_screens=True).save(os.path.join(RES, name + ".png"))
+    except OSError as e:            # Sandbox window minimized: no screen to photograph
+        say("photo %s failed: %s" % (name, e))
 
 
 def key(vk, up=False):
@@ -201,6 +204,12 @@ def body():
     check("armor skin rebuilt in the accent", age < 600, "%.0fs old" % age)
     check("Open-Shell running", b"StartMenu.exe" in subprocess.run(["tasklist"], capture_output=True).stdout)
     check("desktop folder icon overridden", bool(after["desktop_icon"]) and os.path.exists(after["desktop_icon"].rsplit(",", 1)[0]), after["desktop_icon"])
+    # up to 2.1 each Apply doubled every desktop.ini (\r\r\n, read back as blank lines)
+    dini = os.path.join(os.environ["USERPROFILE"], "Desktop", "desktop.ini")
+    draw = open(dini, "rb").read() if os.path.exists(dini) else b""
+    dtext = draw.decode("utf-16", "replace") if draw[:2] == b"\xff\xfe" else draw.decode("mbcs", "replace")
+    check("desktop.ini written cleanly (no doubling)", draw and "\r\r" not in dtext and "\r\n\r\n" not in dtext
+          and len(draw) < 4096, (len(draw), dtext[:120]))
     import cpl_panes
     ini = open(cpl_panes.INI, encoding="utf-16").read() if os.path.exists(cpl_panes.INI) else ""
     check("Control Panel pane redirect written", "shell32.dll=" in ini, ini.strip())
